@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 # --- Base Step Model ---
 # Common fields for all step types
 class BaseWorkflowStep(BaseModel):
-	description: Optional[str] = Field(None, description="Optional description/comment about the step's purpose.")
+	description: str = Field(..., description="Description/comment about the step's purpose.")
 	# Allow other fields captured from raw events but not explicitly modeled
 	model_config = {'extra': 'allow'}
 
@@ -118,6 +118,18 @@ class WorkflowInputSchemaDefinition(BaseModel):
 	)
 
 
+class WorkflowOutputSchemaDefinition(BaseModel):
+	name: str = Field(
+		...,
+		description='The name of the property. This will be used as the key in the input schema.',
+	)
+	type: Literal['string', 'number', 'bool']
+	required: Optional[bool] = Field(
+		default=None,
+		description='None if the property is optional, True if the property is required.',
+	)
+
+
 # --- Top-Level Workflow Definition File ---
 # Uses the Union WorkflowStep type
 
@@ -127,7 +139,7 @@ class WorkflowHealingDefinition(BaseModel):
 
 	workflow_analysis: str = Field(
 		...,
-		description='A chain of thought reasoning analysis of the original workflow recording.',
+		description='A chain of thought reasoning analysis of the original workflow recording. Describe the whole workflow in detail, roughly step by step.',
 	)
 
 	name: str = Field(..., description='The name of the workflow.')
@@ -138,7 +150,12 @@ class WorkflowHealingDefinition(BaseModel):
 		min_length=1,
 		description='An ordered list of steps (actions or agent tasks) to be executed.',
 	)
+
 	input_schema: list[WorkflowInputSchemaDefinition] = Field(
 		# default=WorkflowInputSchemaDefinition(),
 		description='List of input schema definitions.',
+	)
+
+	output_schema: list[WorkflowOutputSchemaDefinition] = Field(
+		description='List of output schema definitions that the workflow will return.',
 	)

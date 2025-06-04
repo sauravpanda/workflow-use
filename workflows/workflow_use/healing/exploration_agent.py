@@ -18,6 +18,7 @@ llm = ChatOpenAI(
 	base_url='https://api.groq.com/openai/v1',
 	model='meta-llama/llama-4-maverick-17b-128e-instruct',
 	api_key=SecretStr(os.environ['GROQ_API_KEY']),
+	# model='gpt-4.1-mini',
 	temperature=0.0,
 )
 page_extraction_llm = ChatOpenAI(
@@ -30,7 +31,7 @@ page_extraction_llm = ChatOpenAI(
 system_prompt = open('workflow_use/healing/healing_prompt.md').read()
 
 
-controller = Controller()
+controller = Controller(output_model=WorkflowHealingDefinition)
 
 
 class ActionModel(BaseModel):
@@ -89,18 +90,18 @@ Page content: {page}"""
 	return ActionResult(extracted_content=msg, include_in_memory=True)
 
 
-@controller.action('create_workflow', param_model=WorkflowHealingDefinition)
-async def create_workflow(workflow_definition: WorkflowHealingDefinition):
-	# Save workflow definition to JSON file
-	workflow_json = workflow_definition.model_dump_json(indent=2)
-	with open('./tmp/workflow.json', 'w') as f:
-		f.write(workflow_json)
+# @controller.action('create_workflow', param_model=WorkflowHealingDefinition)
+# async def create_workflow(workflow_definition: WorkflowHealingDefinition):
+# 	# Save workflow definition to JSON file
+# 	workflow_json = workflow_definition.model_dump_json(indent=2)
+# 	with open('./tmp/workflow.json', 'w') as f:
+# 		f.write(workflow_json)
 
-	# Print workflow definition
-	print('Workflow Definition:')
-	print(workflow_json)
+# 	# Print workflow definition
+# 	print('Workflow Definition:')
+# 	print(workflow_json)
 
-	return 'workflow saved; please call done function now'
+# 	return 'workflow saved; please call done function now'
 
 
 # task_message = """
@@ -109,10 +110,16 @@ async def create_workflow(workflow_definition: WorkflowHealingDefinition):
 # Search for a part (for example "YH482053P") and extract the price of the part.
 # """
 
-task_message = """
-Create a workflow for the searching a one way flight on https://www.google.com/flights
+# task_message = """
+# Create a workflow for the searching a one way flight on https://www.google.com/flights
 
-It's a multi page form. The task is done when you fill all the fields and submit the form.
+# Make sure you confirm the flight destination after type it in.
+# """
+
+task_message = """
+Create a workflow for the government form on https://v0-government-form-example.vercel.app
+
+Make up all information. It's a multi page form. The task is done when you press the first next button (automate only the first page).
 """
 
 
@@ -129,9 +136,30 @@ async def explore_page():
 			override_system_message=system_prompt,
 			enable_memory=False,
 			max_actions_per_step=1,
+			include_attributes=[
+				'title',
+				'type',
+				'name',
+				'role',
+				'aria-label',
+				'placeholder',
+				'value',
+				'alt',
+				'aria-expanded',
+				'data-date-format',
+				'data-state',
+				'aria-checked',
+			],
+			tool_calling_method='auto',
 		)
 
-		await agent.run()
+		history = await agent.run()
+
+		workflow_definition = WorkflowHealingDefinition.model_validate_json(history.final_result() or '{}')
+
+		workflow_json = workflow_definition.model_dump_json(indent=2)
+		with open('./tmp/workflow.json', 'w') as f:
+			f.write(workflow_json)
 
 
 if __name__ == '__main__':
