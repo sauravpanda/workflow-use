@@ -1,4 +1,4 @@
-from browser_use.agent.views import ActionModel, AgentBrain
+from browser_use.agent.views import AgentBrain
 from pydantic import BaseModel
 
 
@@ -11,13 +11,14 @@ class SimpleDomElement(BaseModel):
 	tag_name: str
 	# xpath: str
 	highlight_index: int | None
-	entire_parent_branch_path: list[str]
+	# entire_parent_branch_path: list[str]
 	# attributes: dict[str, str]
 	shadow_root: bool
-	css_selector: str | None
+	# css_selector: str | None
+	element_hash: str
 
 
-class ParsedAgentStep(BaseModel):
+class ParsedAgentStep[T](BaseModel):
 	"""
 	Simple step for parsed agent output.
 	"""
@@ -26,7 +27,7 @@ class ParsedAgentStep(BaseModel):
 	title: str
 
 	agent_brain: AgentBrain
-	actions: list[ActionModel]
+	actions: list[dict]
 
 	results: list[SimpleResult]
 

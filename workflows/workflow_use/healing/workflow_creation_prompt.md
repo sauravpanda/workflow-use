@@ -23,11 +23,20 @@ In the following messages you will find a list of steps that were taken by Brows
       - `css_selector`: The CSS selector for the element.
 2.  `screenshot` (content[1]): An optional image of the webpage at the time of the step. This provides visual context for the agent's actions and the page state.
 
-- **Output Format:**
+When generating the output JSON, adhere to the following critical guidelines:
 
-Try to avoid using agentic steps as much as possible (use them really only when you are not sure what to do).
+**0. Prioritize `workflow_analysis` and Strategic Step Selection:**
 
-Follow these rules when generating the output JSON: 0. The first thing you will output is the "workflow_analysis". First analyze the original workflow recording, what it is about and create a general analysis of the workflow. Also first think about which variables are going to be needed for the workflow, based on the workflow steps input.
+- **`workflow_analysis` as the First Output:** The very first key in your JSON output **must** be `"workflow_analysis"`. This section requires careful thought and should be completed before defining other parts of the workflow.
+  - **Comprehensive Analysis:** Within `workflow_analysis`, you must:
+    1.  Analyze the original steps: Understand what it's about and provide a general analysis.
+    2.  Explain the task: Clearly articulate the purpose of the workflow you are creating.
+    3.  Create a to-do list: Detail all necessary steps for the workflow.
+    4.  Identify variables: Determine all required input variables based on the steps and the task.
+    5.  Optimize steps: Review the to-do list. Can any steps be combined? Are any missing? Think hard about this.
+- **Minimize Agentic Steps:** As a general principle, try to avoid using agentic steps (`"type": "agent"`) as much as possible. Use them _only_ when you are genuinely unsure about how to proceed with a deterministic action, typically due to dynamic content or choices that cannot be pre-programmed.
+
+**Following `workflow_analysis`, structure the rest of the JSON according to these rules:**
 
 1. Top-level keys: "workflow_analysis", "name", "description", "input_schema", "steps" and "version", "output_schema".
    - "input_schema" - MUST follow JSON-Schema draft-7 subset semantics:
@@ -68,10 +77,16 @@ Follow these rules when generating the output JSON: 0. The first thing you will 
 5. In the events you will find all the selectors relative to a particular action, replicate all of them in the workflow.
 6. For many workflows steps you can go directly to certain url and skip the initial clicks (for example searching for something).
 
-**High-level task description provided by the user (may be empty):**
+_Task for the agent that guided the execution of the workflow:_
+<goal>
 {goal}
+</goal>
 
-**Available actions:**
+Assume everything that agent did it could be parametrized. Think about which variables can be extracted from the workflow steps. `<goal>` is just to show you the task that the agent was given.
+
+_Available actions:_
+<actions>
 {actions}
+</actions>
 
 Input session events will follow one-by-one in subsequent messages.

@@ -45,40 +45,46 @@ class ClickStep(TimestampedWorkflowStep):
 	"""Clicks an element using 'click' (maps to workflow controller's click)."""
 
 	type: Literal['click']  # As seen in examples
-	cssSelector: str = Field(..., description='CSS selector for the target element.')
-	xpath: Optional[str] = Field(None, description='XPath selector (often informational).')
+	# cssSelector: str = Field(..., description='CSS selector for the target element.')
+	# xpath: Optional[str] = Field(None, description='XPath selector (often informational).')
 	elementTag: Optional[str] = Field(None, description='HTML tag (informational).')
 	elementText: Optional[str] = Field(None, description='Element text (informational).')
+
+	elementHash: str = Field(..., description='Hash of the element.')
 
 
 class InputStep(TimestampedWorkflowStep):
 	"""Inputs text using 'input' (maps to workflow controller's input)."""
 
 	type: Literal['input']  # As seen in examples
-	cssSelector: str = Field(..., description='CSS selector for the target input element.')
+	# cssSelector: str = Field(..., description='CSS selector for the target input element.')
 	value: str = Field(..., description='Value to input. Can use {context_var}.')
-	xpath: Optional[str] = Field(None, description='XPath selector (informational).')
+	# xpath: Optional[str] = Field(None, description='XPath selector (informational).')
 	elementTag: Optional[str] = Field(None, description='HTML tag (informational).')
+
+	elementHash: str = Field(..., description='Hash of the element.')
 
 
 class SelectChangeStep(TimestampedWorkflowStep):
 	"""Selects a dropdown option using 'select_change' (maps to workflow controller's select_change)."""
 
 	type: Literal['select_change']  # Assumed type for workflow controller's select_change
-	cssSelector: str = Field(..., description='CSS selector for the target select element.')
+	# cssSelector: str = Field(..., description='CSS selector for the target select element.')
 	selectedText: str = Field(..., description='Visible text of the option to select. Can use {context_var}.')
-	xpath: Optional[str] = Field(None, description='XPath selector (informational).')
+	# xpath: Optional[str] = Field(None, description='XPath selector (informational).')
 	elementTag: Optional[str] = Field(None, description='HTML tag (informational).')
+	elementHash: str = Field(..., description='Hash of the element.')
 
 
 class KeyPressStep(TimestampedWorkflowStep):
 	"""Presses a key using 'key_press' (maps to workflow controller's key_press)."""
 
 	type: Literal['key_press']  # As seen in examples
-	cssSelector: str = Field(..., description='CSS selector for the target element.')
+	# cssSelector: str = Field(..., description='CSS selector for the target element.')
 	key: str = Field(..., description="The key to press (e.g., 'Tab', 'Enter').")
-	xpath: Optional[str] = Field(None, description='XPath selector (informational).')
+	# xpath: Optional[str] = Field(None, description='XPath selector (informational).')
 	elementTag: Optional[str] = Field(None, description='HTML tag (informational).')
+	elementHash: str = Field(..., description='Hash of the element.')
 
 
 class ScrollStep(TimestampedWorkflowStep):
@@ -144,7 +150,7 @@ class WorkflowDefinitionSchema(BaseModel):
 
 	workflow_analysis: Optional[str] = Field(
 		None,
-		description='A chain of thought reasoning analysis of the original workflow recording.',
+		description='A chain of thought reasoning about the workflow. Think about which variables should be extracted.',
 	)
 
 	name: str = Field(..., description='The name of the workflow.')

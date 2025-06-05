@@ -15,6 +15,9 @@ class HealingService:
 	def __init__(self, llm: BaseChatModel):
 		self.llm = llm
 
+	def _remove_none_fields_from_dict(self, d: dict) -> dict:
+		return {k: v for k, v in d.items() if v is not None}
+
 	def _history_to_workflow_definition(self, history_list: AgentHistoryList) -> list[HumanMessage]:
 		# history
 
@@ -29,7 +32,7 @@ class HealingService:
 				url=history.state.url,
 				title=history.state.title,
 				agent_brain=history.model_output.current_state,
-				actions=history.model_output.action,
+				actions=[self._remove_none_fields_from_dict(action.model_dump()) for action in history.model_output.action],
 				results=[
 					SimpleResult(
 						success=result.success or False,
@@ -41,9 +44,10 @@ class HealingService:
 					SimpleDomElement(
 						tag_name=element.tag_name,
 						highlight_index=element.highlight_index,
-						entire_parent_branch_path=element.entire_parent_branch_path,
+						# entire_parent_branch_path=element.entire_parent_branch_path,
 						shadow_root=element.shadow_root,
-						css_selector=element.css_selector,
+						# css_selector=element.css_selector,
+						element_hash=f'{element.tag_name}_{element.highlight_index}_{hash(str(element)) % 1000000:06d}',
 					)
 					for element in history.state.interacted_element
 					if element is not None
