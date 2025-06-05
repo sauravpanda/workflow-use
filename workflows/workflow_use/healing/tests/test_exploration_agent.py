@@ -9,8 +9,6 @@ from patchright.async_api import async_playwright
 from playwright.async_api import Page
 from pydantic import BaseModel, Field, SecretStr
 
-from workflow_use.healing.views import WorkflowHealingDefinition
-
 logger = logging.getLogger(__name__)
 
 
@@ -28,10 +26,10 @@ page_extraction_llm = ChatOpenAI(
 	temperature=0.0,
 )
 
-system_prompt = open('workflow_use/healing/healing_prompt.md').read()
+system_prompt = open('workflow_use/healing/_agent/agent_prompt.md').read()
 
 
-controller = Controller(output_model=WorkflowHealingDefinition)
+controller = Controller()
 
 
 class ActionModel(BaseModel):
@@ -90,36 +88,10 @@ Page content: {page}"""
 	return ActionResult(extracted_content=msg, include_in_memory=True)
 
 
-# @controller.action('create_workflow', param_model=WorkflowHealingDefinition)
-# async def create_workflow(workflow_definition: WorkflowHealingDefinition):
-# 	# Save workflow definition to JSON file
-# 	workflow_json = workflow_definition.model_dump_json(indent=2)
-# 	with open('./tmp/workflow.json', 'w') as f:
-# 		f.write(workflow_json)
-
-# 	# Print workflow definition
-# 	print('Workflow Definition:')
-# 	print(workflow_json)
-
-# 	return 'workflow saved; please call done function now'
-
-
-# task_message = """
-# Create a workflow for searching for parts on https://shop.advanceautoparts.com
-
-# Search for a part (for example "YH482053P") and extract the price of the part.
-# """
-
-# task_message = """
-# Create a workflow for the searching a one way flight on https://www.google.com/flights
-
-# Make sure you confirm the flight destination after type it in.
-# """
-
 task_message = """
-Create a workflow for the government form on https://v0-government-form-example.vercel.app
+Create a workflow for the government form on https://v0-simple-government-form-xi.vercel.app
 
-Make up all information. It's a multi page form. The task is done when you press the first next button (automate only the first page).
+Make up all information. It's a multi page form. The task is done when you submit the form.
 """
 
 
@@ -135,7 +107,8 @@ async def explore_page():
 			controller=controller,
 			override_system_message=system_prompt,
 			enable_memory=False,
-			max_actions_per_step=1,
+			max_failures=10,
+			# max_actions_per_step=1,
 			include_attributes=[
 				'title',
 				'type',
@@ -155,11 +128,7 @@ async def explore_page():
 
 		history = await agent.run()
 
-		workflow_definition = WorkflowHealingDefinition.model_validate_json(history.final_result() or '{}')
-
-		workflow_json = workflow_definition.model_dump_json(indent=2)
-		with open('./tmp/workflow.json', 'w') as f:
-			f.write(workflow_json)
+		history.save_to_file('./tmp/history.json')
 
 
 if __name__ == '__main__':

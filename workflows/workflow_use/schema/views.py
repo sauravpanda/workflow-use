@@ -7,15 +7,16 @@ from pydantic import BaseModel, Field
 # Common fields for all step types
 class BaseWorkflowStep(BaseModel):
 	description: Optional[str] = Field(None, description="Optional description/comment about the step's purpose.")
-	output: Optional[str] = Field(None, description='Context key to store step output under.')
+	# output: Optional[str] = Field(None, description='Context key to store step output under.')
 	# Allow other fields captured from raw events but not explicitly modeled
 	model_config = {'extra': 'allow'}
 
 
 # --- Timestamped Step Mixin (for deterministic actions) ---
 class TimestampedWorkflowStep(BaseWorkflowStep):
-	timestamp: Optional[int] = Field(None, description='Timestamp from recording (informational).')
-	tabId: Optional[int] = Field(None, description='Browser tab ID from recording (informational).')
+	# timestamp: Optional[int] = Field(None, description='Timestamp from recording (informational).')
+	# tabId: Optional[int] = Field(None, description='Browser tab ID from recording (informational).')
+	pass
 
 
 # --- Agent Step ---
