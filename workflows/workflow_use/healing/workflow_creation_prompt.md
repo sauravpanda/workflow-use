@@ -8,7 +8,7 @@ Transform recorded browser interactions into a structured workflow by:
 
 1. **Extracting actual values** (not placeholder defaults) from the input steps
 2. **Identifying reusable parameters** that should become workflow inputs
-3. **Creating deterministic steps** wherever possible, using agentic steps only when necessary
+3. **Creating deterministic steps** wherever possible, using agentic steps when necessary (for date pickers, dropdowns, multi selects, radio buttons, etc.)
 4. **Optimizing the workflow** for clarity and efficiency
 
 ## Input Format
@@ -100,6 +100,7 @@ Each step must include a `"type"` field and a brief `"description"`.
     - Selecting from frequently changing lists (search results, products)
     - Interacting with time-sensitive elements (calendars, schedules)
     - Content evaluation based on user criteria
+  - Use agent steps for any sort of date pickers, dropdowns, multi selects, radio buttons, etc.
 
 ## Critical Requirements
 

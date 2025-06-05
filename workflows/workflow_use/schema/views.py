@@ -13,10 +13,12 @@ class BaseWorkflowStep(BaseModel):
 
 
 # --- Timestamped Step Mixin (for deterministic actions) ---
-class TimestampedWorkflowStep(BaseWorkflowStep):
-	# timestamp: Optional[int] = Field(None, description='Timestamp from recording (informational).')
-	# tabId: Optional[int] = Field(None, description='Browser tab ID from recording (informational).')
-	pass
+class SelectorWorkflowSteps(BaseWorkflowStep):
+	# cssSelector: str = Field(..., description='CSS selector for the target element.')
+	# xpath: Optional[str] = Field(None, description='XPath selector (often informational).')
+	# elementTag: Optional[str] = Field(None, description='HTML tag (informational).')
+
+	elementHash: str = Field(..., description='Hash of the element.')
 
 
 # --- Agent Step ---
@@ -34,62 +36,44 @@ class AgentTaskWorkflowStep(BaseWorkflowStep):
 
 
 # Actions from src/workflows/controller/service.py & Examples
-class NavigationStep(TimestampedWorkflowStep):
+class NavigationStep(SelectorWorkflowSteps):
 	"""Navigates using the 'navigation' action (likely maps to go_to_url)."""
 
 	type: Literal['navigation']  # As seen in examples
 	url: str = Field(..., description='Target URL to navigate to. Can use {context_var}.')
 
 
-class ClickStep(TimestampedWorkflowStep):
+class ClickStep(SelectorWorkflowSteps):
 	"""Clicks an element using 'click' (maps to workflow controller's click)."""
 
 	type: Literal['click']  # As seen in examples
-	# cssSelector: str = Field(..., description='CSS selector for the target element.')
-	# xpath: Optional[str] = Field(None, description='XPath selector (often informational).')
-	# elementTag: Optional[str] = Field(None, description='HTML tag (informational).')
-	# elementText: Optional[str] = Field(None, description='Element text (informational).')
-
-	elementHash: str = Field(..., description='Hash of the element.')
 
 
-class InputStep(TimestampedWorkflowStep):
+class InputStep(SelectorWorkflowSteps):
 	"""Inputs text using 'input' (maps to workflow controller's input)."""
 
 	type: Literal['input']  # As seen in examples
-	# cssSelector: str = Field(..., description='CSS selector for the target input element.')
+
 	value: str = Field(..., description='Value to input. Can use {context_var}.')
-	# xpath: Optional[str] = Field(None, description='XPath selector (informational).')
-	# elementTag: Optional[str] = Field(None, description='HTML tag (informational).')
-
-	elementHash: str = Field(..., description='Hash of the element.')
 
 
-class SelectChangeStep(TimestampedWorkflowStep):
+class SelectChangeStep(SelectorWorkflowSteps):
 	"""Selects a dropdown option using 'select_change' (maps to workflow controller's select_change)."""
 
 	type: Literal['select_change']  # Assumed type for workflow controller's select_change
-	# cssSelector: str = Field(..., description='CSS selector for the target select element.')
+
 	selectedText: str = Field(..., description='Visible text of the option to select. Can use {context_var}.')
-	# xpath: Optional[str] = Field(None, description='XPath selector (informational).')
-	# elementTag: Optional[str] = Field(None, description='HTML tag (informational).')
-
-	elementHash: str = Field(..., description='Hash of the element.')
 
 
-class KeyPressStep(TimestampedWorkflowStep):
+class KeyPressStep(SelectorWorkflowSteps):
 	"""Presses a key using 'key_press' (maps to workflow controller's key_press)."""
 
 	type: Literal['key_press']  # As seen in examples
-	# cssSelector: str = Field(..., description='CSS selector for the target element.')
+
 	key: str = Field(..., description="The key to press (e.g., 'Tab', 'Enter').")
-	# xpath: Optional[str] = Field(None, description='XPath selector (informational).')
-	# elementTag: Optional[str] = Field(None, description='HTML tag (informational).')
-
-	elementHash: str = Field(..., description='Hash of the element.')
 
 
-class ScrollStep(TimestampedWorkflowStep):
+class ScrollStep(SelectorWorkflowSteps):
 	"""Scrolls the page using 'scroll' (maps to workflow controller's scroll)."""
 
 	type: Literal['scroll']  # Assumed type for workflow controller's scroll
@@ -97,7 +81,7 @@ class ScrollStep(TimestampedWorkflowStep):
 	scrollY: int = Field(..., description='Vertical scroll pixels.')
 
 
-class PageExtractionStep(TimestampedWorkflowStep):
+class PageExtractionStep(SelectorWorkflowSteps):
 	"""Extracts text from the page using 'page_extraction' (maps to workflow controller's page_extraction)."""
 
 	type: Literal['extract_page_content']  # Assumed type for workflow controller's page_extraction
