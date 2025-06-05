@@ -47,7 +47,7 @@ class HealingService:
 						# entire_parent_branch_path=element.entire_parent_branch_path,
 						shadow_root=element.shadow_root,
 						# css_selector=element.css_selector,
-						element_hash=f'{element.tag_name}_{element.highlight_index}_{hash(str(element)) % 1000000:06d}',
+						element_hash=f'{element.highlight_index}_{hash(str(element)) % 1000000:06d}',
 					)
 					for element in history.state.interacted_element
 					if element is not None

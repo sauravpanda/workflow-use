@@ -47,8 +47,8 @@ class ClickStep(TimestampedWorkflowStep):
 	type: Literal['click']  # As seen in examples
 	# cssSelector: str = Field(..., description='CSS selector for the target element.')
 	# xpath: Optional[str] = Field(None, description='XPath selector (often informational).')
-	elementTag: Optional[str] = Field(None, description='HTML tag (informational).')
-	elementText: Optional[str] = Field(None, description='Element text (informational).')
+	# elementTag: Optional[str] = Field(None, description='HTML tag (informational).')
+	# elementText: Optional[str] = Field(None, description='Element text (informational).')
 
 	elementHash: str = Field(..., description='Hash of the element.')
 
@@ -60,7 +60,7 @@ class InputStep(TimestampedWorkflowStep):
 	# cssSelector: str = Field(..., description='CSS selector for the target input element.')
 	value: str = Field(..., description='Value to input. Can use {context_var}.')
 	# xpath: Optional[str] = Field(None, description='XPath selector (informational).')
-	elementTag: Optional[str] = Field(None, description='HTML tag (informational).')
+	# elementTag: Optional[str] = Field(None, description='HTML tag (informational).')
 
 	elementHash: str = Field(..., description='Hash of the element.')
 
@@ -72,7 +72,8 @@ class SelectChangeStep(TimestampedWorkflowStep):
 	# cssSelector: str = Field(..., description='CSS selector for the target select element.')
 	selectedText: str = Field(..., description='Visible text of the option to select. Can use {context_var}.')
 	# xpath: Optional[str] = Field(None, description='XPath selector (informational).')
-	elementTag: Optional[str] = Field(None, description='HTML tag (informational).')
+	# elementTag: Optional[str] = Field(None, description='HTML tag (informational).')
+
 	elementHash: str = Field(..., description='Hash of the element.')
 
 
@@ -83,7 +84,8 @@ class KeyPressStep(TimestampedWorkflowStep):
 	# cssSelector: str = Field(..., description='CSS selector for the target element.')
 	key: str = Field(..., description="The key to press (e.g., 'Tab', 'Enter').")
 	# xpath: Optional[str] = Field(None, description='XPath selector (informational).')
-	elementTag: Optional[str] = Field(None, description='HTML tag (informational).')
+	# elementTag: Optional[str] = Field(None, description='HTML tag (informational).')
+
 	elementHash: str = Field(..., description='Hash of the element.')
 
 
