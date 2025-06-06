@@ -8,6 +8,7 @@ from pathlib import Path
 
 import typer
 from browser_use import Browser
+from langchain.chat_models.base import BaseChatModel
 
 # Assuming OPENAI_API_KEY is set in the environment
 from langchain_openai import ChatOpenAI
@@ -30,7 +31,7 @@ app = typer.Typer(
 )
 
 # Default LLM instance to None
-llm_instance = None
+llm_instance: BaseChatModel
 try:
 	llm_instance = ChatOpenAI(model='gpt-4o')
 	page_extraction_llm = ChatOpenAI(model='gpt-4o-mini')

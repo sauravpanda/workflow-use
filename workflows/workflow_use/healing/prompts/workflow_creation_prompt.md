@@ -80,9 +80,9 @@ Each step must include a `"type"` field and a brief `"description"`.
 - Include all required parameters as specified in the action definitions
 - For actions that interact with elements (click, input, select_change, key_press):
   - **ALWAYS use the exact `elementHash` from `interacted_elements`** (`elementHash` can NOT be a variable (`{{ }}` is not allowed inside the field) or guessed)
-  - Include optional fields like `elementTag` and `elementText` for reference
   - If you are not sure about element hash (in case of doubt) use `agent` step
 - Reference workflow inputs using `{{input_name}}` syntax in parameter values
+- Please NEVER output `cssSelector`, `xpath`, `elementTag` fields in the output. They are not needed. (ALWAYS leave them empty/None).
 
 **Extract Page Content Steps**
 

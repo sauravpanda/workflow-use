@@ -1,19 +1,23 @@
+import hashlib
 import json
 from typing import Any, Dict, List, Sequence, Union
 
 import aiofiles
 from browser_use import AgentHistoryList
+from browser_use.agent.views import DOMHistoryElement
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 
 from workflow_use.builder.service import BuilderService
 from workflow_use.healing.views import ParsedAgentStep, SimpleDomElement, SimpleResult
-from workflow_use.schema.views import WorkflowDefinitionSchema
+from workflow_use.schema.views import SelectorWorkflowSteps, WorkflowDefinitionSchema
 
 
 class HealingService:
 	def __init__(self, llm: BaseChatModel):
 		self.llm = llm
+
+		self.interacted_elements_hash_map: dict[str, DOMHistoryElement] = {}
 
 	def _remove_none_fields_from_dict(self, d: dict) -> dict:
 		return {k: v for k, v in d.items() if v is not None}
@@ -26,6 +30,28 @@ class HealingService:
 		for history in history_list.history:
 			if history.model_output is None:
 				continue
+
+			interacted_elements: list[SimpleDomElement] = []
+			for element in history.state.interacted_element:
+				if element is None:
+					continue
+
+				# hash element by hacshing the tag_name + css_selector + highlight_index
+				element_hash = hashlib.sha256(
+					f'{element.tag_name}_{element.css_selector}_{element.highlight_index}'.encode()
+				).hexdigest()[:10]
+
+				if element_hash not in self.interacted_elements_hash_map:
+					self.interacted_elements_hash_map[element_hash] = element
+
+				interacted_elements.append(
+					SimpleDomElement(
+						tag_name=element.tag_name,
+						highlight_index=element.highlight_index,
+						shadow_root=element.shadow_root,
+						element_hash=element_hash,
+					)
+				)
 
 			screenshot = history.state.screenshot
 			parsed_step = ParsedAgentStep(
@@ -40,18 +66,7 @@ class HealingService:
 					)
 					for result in history.result
 				],
-				interacted_elements=[
-					SimpleDomElement(
-						tag_name=element.tag_name,
-						highlight_index=element.highlight_index,
-						# entire_parent_branch_path=element.entire_parent_branch_path,
-						shadow_root=element.shadow_root,
-						# css_selector=element.css_selector,
-						element_hash=f'{element.highlight_index}_{hash(str(element)) % 1000000:06d}',
-					)
-					for element in history.state.interacted_element
-					if element is not None
-				],
+				interacted_elements=interacted_elements,
 			)
 
 			parsed_step_json = json.dumps(parsed_step.model_dump(exclude_none=True))
@@ -70,8 +85,22 @@ class HealingService:
 
 		return messages
 
+	def _populate_selector_fields(self, workflow_definition: WorkflowDefinitionSchema) -> WorkflowDefinitionSchema:
+		"""Populate cssSelector, xpath, and elementTag fields from interacted_elements_hash_map"""
+		# Process each step to add back the selector fields
+		for step in workflow_definition.steps:
+			if isinstance(step, SelectorWorkflowSteps):
+				if step.elementHash in self.interacted_elements_hash_map:
+					dom_element = self.interacted_elements_hash_map[step.elementHash]
+					step.cssSelector = dom_element.css_selector or ''
+					step.xpath = dom_element.xpath
+					step.elementTag = dom_element.tag_name
+
+		# Create the full WorkflowDefinitionSchema with populated fields
+		return workflow_definition
+
 	async def create_workflow_definition(self, task: str, history_list: AgentHistoryList) -> WorkflowDefinitionSchema:
-		async with aiofiles.open('workflow_use/healing/workflow_creation_prompt.md', mode='r') as f:
+		async with aiofiles.open('workflow_use/healing/prompts/workflow_creation_prompt.md', mode='r') as f:
 			prompt_content = await f.read()
 
 		prompt_content = prompt_content.format(goal=task, actions=BuilderService._get_available_actions_markdown())
@@ -84,6 +113,8 @@ class HealingService:
 		# Chain the model with the structured output schema
 		structured_llm = self.llm.with_structured_output(WorkflowDefinitionSchema, method='function_calling')
 
-		workflow_definition = await structured_llm.ainvoke(all_messages)
+		workflow_definition: WorkflowDefinitionSchema = await structured_llm.ainvoke(all_messages)  # type: ignore
 
-		return workflow_definition  # type: ignore
+		workflow_definition = self._populate_selector_fields(workflow_definition)
+
+		return workflow_definition

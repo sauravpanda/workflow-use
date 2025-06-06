@@ -47,10 +47,10 @@ class Workflow:
 	def __init__(
 		self,
 		workflow_schema: WorkflowDefinitionSchema,
+		llm: BaseChatModel,
 		*,
 		controller: WorkflowController | None = None,
 		browser: Browser | None = None,
-		llm: BaseChatModel | None = None,
 		page_extraction_llm: BaseChatModel | None = None,
 		fallback_to_agent: bool = True,
 	) -> None:
@@ -95,10 +95,10 @@ class Workflow:
 	def load_from_file(
 		cls,
 		file_path: str | Path,
+		llm: BaseChatModel,
 		*,
 		controller: WorkflowController | None = None,
 		browser: Browser | None = None,
-		llm: BaseChatModel | None = None,
 		page_extraction_llm: BaseChatModel | None = None,
 	) -> Workflow:
 		"""Load a workflow from a file."""
@@ -157,8 +157,6 @@ class Workflow:
 
 	async def _run_agent_step(self, step: AgenticWorkflowStep) -> AgentHistoryList:
 		"""Spin-up an Agent based on step dictionary."""
-		if self.llm is None:
-			raise ValueError("An 'llm' instance must be supplied for agent-based steps")
 
 		task: str = step.task
 		max_steps: int = step.max_steps or 5
@@ -178,8 +176,7 @@ class Workflow:
 		error: Exception | str | None = None,
 	) -> AgentHistoryList:
 		"""Handle step failure by delegating to an agent."""
-		if self.llm is None:
-			raise ValueError("Cannot fall back to agent: An 'llm' instance must be supplied")
+
 		# print('Workflow steps:', step_resolved)
 		# Extract details from the failed step dictionary
 		failed_action_name = step_resolved.type
@@ -378,8 +375,7 @@ class Workflow:
 				logger.warning(
 					f'Deterministic step {step_index + 1} ({action_name}) failed: {e}. Attempting fallback with agent.'
 				)
-				if self.llm is None:
-					raise ValueError('Cannot fall back to agent: LLM instance required.')
+
 				if self.fallback_to_agent:
 					result = await self._fallback_to_agent(step_resolved, step_index, e)
 					if not result.is_successful():

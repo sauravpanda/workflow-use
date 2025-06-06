@@ -7,16 +7,16 @@ from pydantic import BaseModel, Field
 # Common fields for all step types
 class BaseWorkflowStep(BaseModel):
 	description: Optional[str] = Field(None, description="Optional description/comment about the step's purpose.")
-	# output: Optional[str] = Field(None, description='Context key to store step output under.')
+	output: Optional[str] = Field(None, description='Context key to store step output under.')
 	# Allow other fields captured from raw events but not explicitly modeled
 	model_config = {'extra': 'allow'}
 
 
-# --- Timestamped Step Mixin (for deterministic actions) ---
+# --- Steps that require interaction with a DOM element ---
 class SelectorWorkflowSteps(BaseWorkflowStep):
-	# cssSelector: str = Field(..., description='CSS selector for the target element.')
-	# xpath: Optional[str] = Field(None, description='XPath selector (often informational).')
-	# elementTag: Optional[str] = Field(None, description='HTML tag (informational).')
+	cssSelector: Optional[str] = Field(None, description='CSS selector for the target element.')
+	xpath: Optional[str] = Field(None, description='XPath selector (often informational).')
+	elementTag: Optional[str] = Field(None, description='HTML tag (informational).')
 
 	elementHash: str = Field(..., description='Hash of the element.')
 
@@ -29,6 +29,7 @@ class AgentTaskWorkflowStep(BaseWorkflowStep):
 		None,
 		description='Maximum number of iterations for the agent (default handled in code).',
 	)
+
 	# Agent steps might also have 'params' for other configs, handled by extra='allow'
 
 
@@ -36,7 +37,7 @@ class AgentTaskWorkflowStep(BaseWorkflowStep):
 
 
 # Actions from src/workflows/controller/service.py & Examples
-class NavigationStep(SelectorWorkflowSteps):
+class NavigationStep(BaseWorkflowStep):
 	"""Navigates using the 'navigation' action (likely maps to go_to_url)."""
 
 	type: Literal['navigation']  # As seen in examples
@@ -73,7 +74,7 @@ class KeyPressStep(SelectorWorkflowSteps):
 	key: str = Field(..., description="The key to press (e.g., 'Tab', 'Enter').")
 
 
-class ScrollStep(SelectorWorkflowSteps):
+class ScrollStep(BaseWorkflowStep):
 	"""Scrolls the page using 'scroll' (maps to workflow controller's scroll)."""
 
 	type: Literal['scroll']  # Assumed type for workflow controller's scroll
@@ -81,7 +82,7 @@ class ScrollStep(SelectorWorkflowSteps):
 	scrollY: int = Field(..., description='Vertical scroll pixels.')
 
 
-class PageExtractionStep(SelectorWorkflowSteps):
+class PageExtractionStep(BaseWorkflowStep):
 	"""Extracts text from the page using 'page_extraction' (maps to workflow controller's page_extraction)."""
 
 	type: Literal['extract_page_content']  # Assumed type for workflow controller's page_extraction

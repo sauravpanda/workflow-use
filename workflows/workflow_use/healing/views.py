@@ -31,4 +31,4 @@ class ParsedAgentStep[T](BaseModel):
 
 	results: list[SimpleResult]
 
-	interacted_elements: list[SimpleDomElement | None]
+	interacted_elements: list[SimpleDomElement]

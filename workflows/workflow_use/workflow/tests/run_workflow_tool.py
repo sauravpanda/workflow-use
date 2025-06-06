@@ -7,17 +7,17 @@ from langchain_openai import ChatOpenAI
 from workflow_use.workflow.service import Workflow
 
 # Instantiate the LLM and the service directly
-llm_instance = ChatOpenAI(model='gpt-4o')  # Or your preferred model
+llm_instance = ChatOpenAI(model='gpt-4o-mini')  # Or your preferred model
 
 
 async def test_run_workflow():
 	"""
 	Tests that the workflow is built correctly from a JSON file path.
 	"""
-	path = Path(__file__).parent / 'tmp' / 'recording.workflow.json'
+	path = Path(__file__).parent.parent.parent.parent / 'tmp' / 'workflow_definition.json'
 
 	workflow = Workflow.load_from_file(path, llm=llm_instance)
-	result = await workflow.run({'model': '12'})
+	result = await workflow.run_as_tool('Make up all the information for the form.')
 	print(result)
 
 
