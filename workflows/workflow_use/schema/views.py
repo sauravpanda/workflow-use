@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 # --- Base Step Model ---
 # Common fields for all step types
 class BaseWorkflowStep(BaseModel):
-	description: Optional[str] = Field(None, description="Optional description/comment about the step's purpose.")
+	description: Optional[str] = Field(None, description="Description of the step's purpose.")
 	output: Optional[str] = Field(None, description='Context key to store step output under.')
 	# Allow other fields captured from raw events but not explicitly modeled
 	model_config = {'extra': 'allow'}
@@ -52,6 +52,11 @@ class ClickStep(SelectorWorkflowSteps):
 
 class InputStep(SelectorWorkflowSteps):
 	"""Inputs text using 'input' (maps to workflow controller's input)."""
+
+	description: Optional[str] = Field(
+		None,
+		description="Description of the step's purpose. If neccesary describe the format that data should be in.",
+	)
 
 	type: Literal['input']  # As seen in examples
 
@@ -122,6 +127,12 @@ class WorkflowInputSchemaDefinition(BaseModel):
 		description='The name of the property. This will be used as the key in the input schema.',
 	)
 	type: Literal['string', 'number', 'bool']
+
+	format: Optional[str] = Field(
+		None,
+		description='Format of the input. If the input is a string, you can specify the format of the string.',
+	)
+
 	required: Optional[bool] = Field(
 		default=None,
 		description='None if the property is optional, True if the property is required.',

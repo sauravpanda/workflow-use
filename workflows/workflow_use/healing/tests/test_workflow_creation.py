@@ -1,5 +1,6 @@
 import asyncio
 import json
+from pathlib import Path
 
 import aiofiles
 from browser_use import AgentHistoryList
@@ -30,9 +31,13 @@ async def test_workflow_creation():
 
 	workflow_definition = await healing_service.create_workflow_definition(task_message, history_list)
 
+	file_save_path = Path('./tmp/workflow_definition.json')
+
 	# save to json
-	async with aiofiles.open('./tmp/workflow_definition.json', mode='w') as f:
+	async with aiofiles.open(file_save_path, mode='w') as f:
 		await f.write(json.dumps(workflow_definition.model_dump(), indent=2))
+
+	print(f'file saved to {file_save_path}')
 
 
 if __name__ == '__main__':

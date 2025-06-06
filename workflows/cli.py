@@ -368,7 +368,12 @@ def run_workflow_command(
 				else:
 					status_str = typer.style('optional', fg=typer.colors.YELLOW)
 
-				full_prompt_text = f'{prompt_question} ({status_str}, {type_info_str})'
+				# Add format information if available
+				format_info_str = ''
+				if hasattr(input_def, 'format') and input_def.format:
+					format_info_str = f', format: {typer.style(input_def.format, fg=typer.colors.GREEN)}'
+
+				full_prompt_text = f'{prompt_question} ({status_str}, {type_info_str}{format_info_str})'
 
 				input_val = None
 				if var_type == 'bool':

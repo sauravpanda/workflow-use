@@ -8,7 +8,7 @@ Transform recorded browser interactions into a structured workflow by:
 
 1. **Extracting actual values** (not placeholder defaults) from the input steps
 2. **Identifying reusable parameters** that should become workflow inputs
-3. **Creating deterministic steps** wherever possible, using agentic steps when necessary (for date pickers, dropdowns, multi selects, radio buttons, etc.)
+3. **Creating deterministic steps** wherever possible, using agentic steps when necessary (explained below)
 4. **Optimizing the workflow** for clarity and efficiency
 
 ## Input Format
@@ -53,7 +53,9 @@ Define workflow parameters using JSON Schema draft-7 subset:
 ```json
 [
   {{"name": "search_term", "type": "string", "required": true }},
-  {{"name": "max_results", "type": "number", "required": false }}
+  {{"name": "max_results", "type": "number", "required": false }},
+  {{"name": "birth_date", "type": "string", "format": "MM/DD/YYYY", "required": true }},
+  {{"name": "email", "type": "string", "format": "user@domain.com", "required": true }}
 ]
 ```
 
@@ -83,6 +85,7 @@ Each step must include a `"type"` field and a brief `"description"`.
   - If you are not sure about element hash (in case of doubt) use `agent` step
 - Reference workflow inputs using `{{input_name}}` syntax in parameter values
 - Please NEVER output `cssSelector`, `xpath`, `elementTag` fields in the output. They are not needed. (ALWAYS leave them empty/None).
+- **For input elements with format requirements**: Include specific format instructions in the step description (e.g., "Enter email in format: user@domain.com", "Enter date in MM/DD/YYYY format", "Enter phone number as (xxx) xxx-xxxx")
 
 **Extract Page Content Steps**
 
@@ -93,6 +96,7 @@ Each step must include a `"type"` field and a brief `"description"`.
 **Agentic Steps (Use Sparingly)**
 
 - **`agent`**: Use when content is dynamic or unpredictable
+
   - `task` (string): User perspective goal (e.g., "Select the restaurant named {{restaurant_name}}")
   - `description` (string): Why agentic reasoning is needed
   - `max_steps` (number, optional): Limit iterations (defaults to 5)
@@ -100,7 +104,22 @@ Each step must include a `"type"` field and a brief `"description"`.
     - Selecting from frequently changing lists (search results, products)
     - Interacting with time-sensitive elements (calendars, schedules)
     - Content evaluation based on user criteria
-  - Use agent steps for any sort of date pickers, dropdowns, multi selects, radio buttons, etc.
+  - **CRITICAL: Use agent steps for any of the following UI elements** - deterministic steps WILL FAIL:
+    - **Dropdowns/select boxes** - Options may load dynamically or change based on context
+    - **Multi-select interfaces** - Complex state management and option filtering
+    - **Radio button groups** - Visual layout often changes, making element hashing unreliable
+    - **Search autocomplete** - Suggestions change based on external data and timing
+    - **Infinite scroll/lazy loading** - Content appears dynamically as user scrolls
+    - **Dynamic form fields** - Fields that show/hide based on other selections
+    - **Complex filters** - Multiple interdependent options that affect each other
+    - **Interactive maps/charts** - Coordinate-based interactions that vary by viewport
+    - **File upload widgets** - Complex drag-and-drop interfaces with validation
+    - **Rich text editors** - Internal DOM structure changes unpredictably
+    - **Modal dialogs** - Timing and positioning issues make element targeting unreliable
+    - **Time-sensitive content** - Elements that change based on real-time data
+    - **AJAX-powered interfaces** - Content that loads asynchronously after page load
+
+  **Why Agent Steps Are Essential**: These elements have dynamic content, unpredictable timing, or complex state that makes deterministic element hashing unreliable. Attempting to use deterministic steps will result in workflow failures when element positions, IDs, or content change. Agent steps provide the flexibility and intelligence needed to handle these dynamic scenarios reliably.
 
 ## Critical Requirements
 
