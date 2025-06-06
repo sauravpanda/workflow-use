@@ -9,15 +9,9 @@ from langchain_openai import ChatOpenAI
 
 from workflow_use.healing._agent.controller import HealingController
 from workflow_use.healing.service import HealingService
+from workflow_use.healing.tests.constants import task_message
 
 llm = ChatOpenAI(model='gpt-4.1', temperature=0)
-
-
-task_message = """
-Create a workflow for the government form on https://v0-simple-government-form-xi.vercel.app
-
-Make up all information. It's a multi page form. The task is done when you submit the form.
-"""
 
 
 ActionModel = HealingController(llm=llm).registry.create_action_model()
