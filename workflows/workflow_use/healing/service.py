@@ -3,18 +3,24 @@ import json
 from typing import Any, Dict, List, Sequence, Union
 
 import aiofiles
-from browser_use import AgentHistoryList
+from browser_use import Agent, AgentHistoryList, Browser
 from browser_use.agent.views import DOMHistoryElement
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
+from patchright.async_api import async_playwright
 
 from workflow_use.builder.service import BuilderService
+from workflow_use.healing._agent.controller import HealingController
+from workflow_use.healing.prompts import HEALING_AGENT_SYSTEM_PROMPT
 from workflow_use.healing.views import ParsedAgentStep, SimpleDomElement, SimpleResult
 from workflow_use.schema.views import SelectorWorkflowSteps, WorkflowDefinitionSchema
 
 
 class HealingService:
-	def __init__(self, llm: BaseChatModel):
+	def __init__(
+		self,
+		llm: BaseChatModel,
+	):
 		self.llm = llm
 
 		self.interacted_elements_hash_map: dict[str, DOMHistoryElement] = {}
@@ -118,3 +124,36 @@ class HealingService:
 		workflow_definition = self._populate_selector_fields(workflow_definition)
 
 		return workflow_definition
+
+	# Generate workflow from prompt
+	async def generate_workflow_from_prompt(
+		self, prompt: str, agent_llm: BaseChatModel, extraction_llm: BaseChatModel
+	) -> WorkflowDefinitionSchema:
+		"""
+		Generate a workflow definition from a prompt by:
+		1. Running a browser agent to explore and complete the task
+		2. Converting the agent history into a workflow definition
+		"""
+
+		async with async_playwright() as playwright:
+			browser = Browser(playwright=playwright)
+
+			agent = Agent(
+				task=prompt,
+				browser_session=browser,
+				llm=agent_llm,
+				page_extraction_llm=extraction_llm,
+				controller=HealingController(extraction_llm=extraction_llm),
+				override_system_message=HEALING_AGENT_SYSTEM_PROMPT,
+				enable_memory=False,
+				max_failures=10,
+				tool_calling_method='auto',
+			)
+
+			# Run the agent to get history
+			history = await agent.run()
+
+			# Create workflow definition from the history
+			workflow_definition = await self.create_workflow_definition(prompt, history)
+
+			return workflow_definition

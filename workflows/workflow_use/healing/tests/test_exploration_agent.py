@@ -8,7 +8,7 @@ from patchright.async_api import async_playwright
 from pydantic import SecretStr
 
 from workflow_use.healing._agent.controller import HealingController
-from workflow_use.healing.tests.constants import task_message
+from workflow_use.healing.tests.constants import TASK_MESSAGE
 
 logger = logging.getLogger(__name__)
 
@@ -35,11 +35,11 @@ async def explore_page():
 		browser = Browser(playwright=playwright)
 
 		agent = Agent(
-			task=task_message,
+			task=TASK_MESSAGE,
 			browser_session=browser,
 			llm=llm,
 			page_extraction_llm=page_extraction_llm,
-			controller=HealingController(llm=llm),
+			controller=HealingController(extraction_llm=page_extraction_llm),
 			override_system_message=system_prompt,
 			enable_memory=False,
 			max_failures=10,

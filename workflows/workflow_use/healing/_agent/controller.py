@@ -31,9 +31,11 @@ class PageContentAnalysis(BaseModel):
 
 
 class HealingController(Controller):
-	def __init__(self, llm: BaseChatModel, exclude_actions: list[str] = [], output_model: type[BaseModel] | None = None):
+	def __init__(
+		self, extraction_llm: BaseChatModel, exclude_actions: list[str] = [], output_model: type[BaseModel] | None = None
+	):
 		super().__init__(exclude_actions=exclude_actions, output_model=output_model)
-		self.llm = llm
+		self.extraction_llm = extraction_llm
 
 		self.registry.action(
 			'Call this action EVERY TIME the content on the page changes or is new. This is very important for understanding workflows.'
@@ -69,7 +71,7 @@ Page content: {page}"""
 		template = PromptTemplate(input_variables=['page'], template=prompt)
 
 		try:
-			structured_llm = self.llm.with_structured_output(PageContentAnalysis, method='function_calling')
+			structured_llm = self.extraction_llm.with_structured_output(PageContentAnalysis, method='function_calling')
 			output: PageContentAnalysis = await structured_llm.ainvoke(template.format(page=content))  # type: ignore
 		except Exception as e:
 			logger.error(f'Error extracting content: {e}')
