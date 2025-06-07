@@ -6,6 +6,7 @@ import json as _json
 import logging
 from pathlib import Path
 from typing import Any, Dict, List, TypeVar
+from typing import cast as _cast
 
 from browser_use import Agent, Browser
 from browser_use.agent.views import ActionResult, AgentHistoryList
@@ -14,7 +15,7 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.tools import StructuredTool
-from pydantic import BaseModel, create_model
+from pydantic import BaseModel, Field, create_model
 
 from workflow_use.controller.service import WorkflowController
 from workflow_use.controller.utils import get_best_element_handle
@@ -568,30 +569,58 @@ class Workflow:
 	# ------------------------------------------------------------------
 
 	def _build_input_model(self) -> type[BaseModel]:
-		"""Return a *pydantic* model matching the workflow's ``input_schema`` section."""
+		"""Return a *pydantic* model matching the workflow's ``input_schema`` section.
+
+		This creates a dynamic Pydantic model that includes format information in field
+		descriptions, making format requirements visible to LLMs when workflows are used as tools.
+		"""
+
 		if not self.inputs_def:
 			# No declared inputs -> generate an empty model
 			# Use schema name for uniqueness, fallback if needed
 			model_name = f'{(self.schema.name or "Workflow").replace(" ", "_")}_NoInputs'
 			return create_model(model_name)
 
+		# Map workflow input types to Python types
 		type_mapping = {
 			'string': str,
 			'number': float,
-			'bool': bool,  # Added boolean type
+			'bool': bool,
 		}
+
+		# Build fields dictionary for create_model()
 		fields: Dict[str, tuple[type, Any]] = {}
+
 		for input_def in self.inputs_def:
 			name = input_def.name
 			type_str = input_def.type
 			py_type = type_mapping.get(type_str)
+
 			if py_type is None:
 				raise ValueError(f'Unsupported input type: {type_str!r} for field {name!r}')
-			# Pydantic's create_model uses ... (Ellipsis) to mark required fields
-			default = ... if input_def.required else None
-			fields[name] = (py_type, default)
 
-		from typing import cast as _cast
+			# Create field description with format information if available
+			# This helps LLMs understand expected input formats when workflow is used as a tool
+			field_description = None
+			if hasattr(input_def, 'format') and input_def.format:
+				field_description = f'Format: {input_def.format}'
+
+			# Build field tuple: (type, default_or_field_info)
+			# Pydantic's create_model uses ... (Ellipsis) to mark required fields
+			if input_def.required:
+				if field_description:
+					# Required field with format description
+					fields[name] = (py_type, Field(..., description=field_description))
+				else:
+					# Required field without format description
+					fields[name] = (py_type, ...)
+			else:
+				if field_description:
+					# Optional field with format description
+					fields[name] = (py_type, Field(None, description=field_description))
+				else:
+					# Optional field without format description
+					fields[name] = (py_type, None)
 
 		# The raw ``create_model`` helper from Pydantic deliberately uses *dynamic*
 		# signatures, which the static type checker cannot easily verify.  We cast
