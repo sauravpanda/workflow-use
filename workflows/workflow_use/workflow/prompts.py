@@ -1,6 +1,6 @@
 import os
 
-AGENT_STEP_SYSTEM_PROMPT_ADDITION = os.path.join(os.path.dirname(__file__), 'prompts', 'agent_step_system_prompt_addition.md')
+AGENT_STEP_SYSTEM_PROMPT = open(os.path.join(os.path.dirname(__file__), 'prompts', 'agent_step_system_prompt.md')).read()
 
 
 WORKFLOW_FALLBACK_PROMPT_TEMPLATE = (

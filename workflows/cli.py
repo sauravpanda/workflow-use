@@ -33,7 +33,7 @@ app = typer.Typer(
 # Default LLM instance to None
 llm_instance: BaseChatModel
 try:
-	llm_instance = ChatOpenAI(model='gpt-4o')
+	llm_instance = ChatOpenAI(model='gpt-4o-mini')
 	page_extraction_llm = ChatOpenAI(model='gpt-4o-mini')
 except Exception as e:
 	typer.secho(f'Error initializing LLM: {e}. Would you like to set your OPENAI_API_KEY?', fg=typer.colors.RED)

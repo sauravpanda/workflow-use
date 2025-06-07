@@ -26,7 +26,7 @@ from workflow_use.schema.views import (
 	WorkflowInputSchemaDefinition,
 	WorkflowStep,
 )
-from workflow_use.workflow.prompts import AGENT_STEP_SYSTEM_PROMPT_ADDITION, STRUCTURED_OUTPUT_PROMPT
+from workflow_use.workflow.prompts import AGENT_STEP_SYSTEM_PROMPT, STRUCTURED_OUTPUT_PROMPT
 from workflow_use.workflow.views import WorkflowRunOutput
 
 logger = logging.getLogger(__name__)
@@ -145,7 +145,7 @@ class Workflow:
 
 		return result
 
-	def _format_step_context(
+	def _format_agent_step_context(
 		self, current_step: AgenticWorkflowStep, previous_step: WorkflowStep | None, next_step: WorkflowStep | None
 	) -> str:
 		"""Format the workflow step context for the agent."""
@@ -166,37 +166,41 @@ class Workflow:
 			current_step.task,
 			'',
 			'=== PREVIOUS STEP (FOR CONTEXT ONLY) ===',
-			format_step_info(previous_step) if previous_step else 'This is the first step in the workflow.',
+			format_step_info(previous_step) if previous_step else None,
 			'',
 			'=== NEXT STEP (FOR CONTEXT ONLY) ===',
-			format_step_info(next_step) if next_step else 'This is the final step in the workflow.',
-			'',
-			'=== CRITICAL INSTRUCTIONS ===',
-			'🎯 EXECUTE ONLY THE CURRENT STEP ABOVE - DO NOT EXECUTE ANYTHING ELSE',
-			'📍 The previous and next step information is FOR CONTEXT ONLY - DO NOT EXECUTE THEM',
-			'🛑 STOP immediately after completing the current step - DO NOT continue to next step',
-			'✅ Call the "done" action as soon as you complete the current step',
-			'⚠️  DO NOT assume this is the final step even if next step says "final step"',
+			format_step_info(next_step) if next_step else None,
 		]
 
+		# Filter out None values
+		sections = [s for s in sections if s is not None]
 		return '\n'.join(sections)
 
-	async def _run_agent_step(self, step: AgenticWorkflowStep) -> AgentHistoryList:
+	async def _run_agent_step(self, step: AgenticWorkflowStep, step_index: int) -> AgentHistoryList:
 		"""Spin-up an Agent based on step dictionary."""
-		previous_step, next_step = self.schema.get_step_neighbors(step)
+		# Get step neighbors using step index instead of object comparison
+		previous_step = None
+		next_step = None
+
+		if step_index is not None:
+			if step_index > 0:
+				previous_step = self.schema.steps[step_index - 1]
+			if step_index < len(self.schema.steps) - 1:
+				next_step = self.schema.steps[step_index + 1]
 
 		# Create contextual task with previous/next step information
-		contextual_task = self._format_step_context(step, previous_step, next_step)
+		contextual_task = self._format_agent_step_context(step, previous_step, next_step)
 
 		# logger.info(f'Contextual task: {contextual_task}')
 		max_steps: int = step.max_steps or 5
 
 		agent = Agent(
 			task=contextual_task,
+			message_context='',
 			llm=self.llm,
 			browser_session=self.browser,
 			# use_vision=True,  # Consider making this configurable via WorkflowStep schema
-			extend_system_message=AGENT_STEP_SYSTEM_PROMPT_ADDITION,
+			override_system_message=AGENT_STEP_SYSTEM_PROMPT,
 		)
 
 		return await agent.run(max_steps=max_steps)
@@ -422,7 +426,7 @@ class Workflow:
 			task_description = step_resolved.task
 			logger.info(f'Running agent task: {task_description}')
 			try:
-				result = await self._run_agent_step(step_resolved)
+				result = await self._run_agent_step(step_resolved, step_index)
 				if not result.is_successful():
 					logger.warning(f'Agent step {step_index + 1} failed evaluation.')
 					raise ValueError(f'Agent step {step_index + 1} failed evaluation.')

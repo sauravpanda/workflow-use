@@ -17,7 +17,9 @@ async def test_run_workflow():
 	path = Path(__file__).parent.parent.parent.parent / 'tmp' / 'workflow_definition.json'
 
 	workflow = Workflow.load_from_file(path, llm=llm_instance)
-	result = await workflow.run_as_tool('Make up all the information for the form.')
+	result = await workflow.run_as_tool(
+		'john, doe, test@test.com, +15555555555, cesta blmasd 123, san francisco, california, 12341, 1st of may 2002, male, citizen, unemployed, 250k income, license application, make up excuse'
+	)
 	print(result)
 
 

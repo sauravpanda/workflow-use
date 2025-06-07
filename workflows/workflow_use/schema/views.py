@@ -169,29 +169,3 @@ class WorkflowDefinitionSchema(BaseModel):
 	def load_from_json(cls, json_path: str):
 		with open(json_path, 'r') as f:
 			return cls.model_validate_json(f.read())
-
-	# --- Step navigation ---
-	def get_step_index(self, step: WorkflowStep) -> int | None:
-		"""Get the index of a step in the workflow."""
-		try:
-			return self.steps.index(step)
-		except ValueError:
-			return None
-
-	def get_next_step(self, step: WorkflowStep) -> WorkflowStep | None:
-		"""Get the next step after the given step."""
-		index = self.get_step_index(step)
-		if index is None or index >= len(self.steps) - 1:
-			return None
-		return self.steps[index + 1]
-
-	def get_previous_step(self, step: WorkflowStep) -> WorkflowStep | None:
-		"""Get the previous step before the given step."""
-		index = self.get_step_index(step)
-		if index is None or index <= 0:
-			return None
-		return self.steps[index - 1]
-
-	def get_step_neighbors(self, step: WorkflowStep) -> tuple[WorkflowStep | None, WorkflowStep | None]:
-		"""Get both previous and next steps as a tuple (previous, next)."""
-		return self.get_previous_step(step), self.get_next_step(step)
