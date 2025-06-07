@@ -27,6 +27,7 @@ from workflow_use.schema.views import (
 	WorkflowStep,
 )
 from workflow_use.workflow.prompts import AGENT_STEP_SYSTEM_PROMPT, STRUCTURED_OUTPUT_PROMPT
+from workflow_use.workflow.step_agent.controller import WorkflowStepAgentController
 from workflow_use.workflow.views import WorkflowRunOutput
 
 logger = logging.getLogger(__name__)
@@ -145,15 +146,12 @@ class Workflow:
 
 		return result
 
-	def _format_agent_step_context(
-		self, current_step: AgenticWorkflowStep, previous_step: WorkflowStep | None, next_step: WorkflowStep | None
-	) -> str:
-		"""Format the workflow step context for the agent."""
+	def _format_agent_step_context(self, current_step: AgenticWorkflowStep, step_index: int) -> str:
+		"""Format the workflow step context for the agent with extended context (last 2, current, next 2 steps)."""
 
-		def format_step_info(step: WorkflowStep) -> str:
+		def format_step_info(step: WorkflowStep, step_num: int) -> str:
 			"""Format step information consistently."""
-
-			info = [f'Type: {step.type}']
+			info = [f'Step {step_num}: Type: {step.type}']
 			if step.description:
 				info.append(f'Description: {step.description}')
 			# For agent steps, show the task
@@ -161,49 +159,61 @@ class Workflow:
 				info.append(f'Task: {step.task}')
 			return '\n'.join(info)
 
-		sections = [
-			'=== CURRENT STEP (YOUR TASK) ===',
-			current_step.task,
-			'',
-			'=== PREVIOUS STEP (FOR CONTEXT ONLY) ===',
-			format_step_info(previous_step) if previous_step else None,
-			'',
-			'=== NEXT STEP (FOR CONTEXT ONLY) ===',
-			format_step_info(next_step) if next_step else None,
-		]
+		sections = []
+		total_steps = len(self.schema.steps)
 
-		# Filter out None values
-		sections = [s for s in sections if s is not None]
+		# Add previous steps context (last 2 steps)
+		prev_steps = []
+		for i in range(max(0, step_index - 2), step_index):
+			prev_step = self.schema.steps[i]
+			prev_steps.append(format_step_info(prev_step, i + 1))
+
+		if prev_steps:
+			sections.extend(['=== PREVIOUS STEPS (FOR CONTEXT ONLY) ===', '\n\n'.join(prev_steps), ''])
+
+		# Add current step context
+		sections.extend(['=== CURRENT STEP (YOUR TASK) ===', format_step_info(current_step, step_index + 1), ''])
+
+		# Add next steps context (next 2 steps)
+		next_steps = []
+		for i in range(step_index + 1, min(total_steps, step_index + 3)):
+			next_step = self.schema.steps[i]
+			next_steps.append(format_step_info(next_step, i + 1))
+
+		if next_steps:
+			sections.extend(
+				[
+					'=== NEXT STEPS (FOR CONTEXT ONLY) ===',
+					'\n\n'.join(next_steps),
+				]
+			)
+
 		return '\n'.join(sections)
 
 	async def _run_agent_step(self, step: AgenticWorkflowStep, step_index: int) -> AgentHistoryList:
 		"""Spin-up an Agent based on step dictionary."""
-		# Get step neighbors using step index instead of object comparison
-		previous_step = None
-		next_step = None
-
-		if step_index is not None:
-			if step_index > 0:
-				previous_step = self.schema.steps[step_index - 1]
-			if step_index < len(self.schema.steps) - 1:
-				next_step = self.schema.steps[step_index + 1]
-
-		# Create contextual task with previous/next step information
-		contextual_task = self._format_agent_step_context(step, previous_step, next_step)
+		# Create contextual task with extended context (last 2, current, next 2 steps)
+		contextual_task = self._format_agent_step_context(step, step_index)
 
 		# logger.info(f'Contextual task: {contextual_task}')
-		max_steps: int = step.max_steps or 5
+
+		# 		task = """
+		# {step.task}
+
+		# Please do not make up any fake data.
+		# """
 
 		agent = Agent(
-			task=contextual_task,
-			message_context='',
+			task=step.task,  # Only the current step task goes into ultimate task
+			message_context=contextual_task,  # Extended context with surrounding steps
 			llm=self.llm,
 			browser_session=self.browser,
+			controller=WorkflowStepAgentController(),
 			# use_vision=True,  # Consider making this configurable via WorkflowStep schema
 			override_system_message=AGENT_STEP_SYSTEM_PROMPT,
 		)
 
-		return await agent.run(max_steps=max_steps)
+		return await agent.run()
 
 	# async def _fallback_to_agent(
 	# 	self,
