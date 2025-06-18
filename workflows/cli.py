@@ -417,6 +417,338 @@ def run_workflow_command(
 	return asyncio.run(_run_workflow())
 
 
+@app.command(name='run-workflow-no-ai', help='Runs an existing workflow without AI using semantic abstraction.')
+def run_workflow_no_ai_command(
+	workflow_path: Path = typer.Argument(
+		...,
+		exists=True,
+		file_okay=True,
+		dir_okay=False,
+		readable=True,
+		help='Path to the .workflow.json file.',
+		show_default=False,
+	),
+):
+	"""
+	Loads and executes a workflow using semantic abstraction without any AI/LLM involvement.
+	This uses visible text mappings to deterministic selectors instead of fragile CSS selectors.
+	"""
+
+	async def _run_workflow_no_ai():
+		typer.echo(
+			typer.style(f'Loading workflow from: {typer.style(str(workflow_path.resolve()), fg=typer.colors.MAGENTA)}', bold=True)
+		)
+		typer.echo()  # Add space
+
+		try:
+			# Instantiate Browser for the Workflow instance
+			# No LLM needed for semantic abstraction approach
+			playwright = await patchright_async_playwright().start()
+
+			browser = Browser(playwright=playwright)
+			# Create a dummy LLM instance since it's required by the constructor but won't be used
+			dummy_llm = None
+			try:
+				from langchain_openai import ChatOpenAI
+				dummy_llm = ChatOpenAI(model='gpt-4o-mini')
+			except:
+				# If OpenAI is not available, we'll handle it gracefully
+				pass
+			
+			workflow_obj = Workflow.load_from_file(
+				str(workflow_path),
+				browser=browser,
+				llm=dummy_llm,  # Won't be used in run_with_no_ai
+			)
+		except Exception as e:
+			typer.secho(f'Error loading workflow: {e}', fg=typer.colors.RED)
+			raise typer.Exit(code=1)
+
+		typer.secho('Workflow loaded successfully.', fg=typer.colors.GREEN, bold=True)
+		typer.secho('Using semantic abstraction mode (no AI/LLM).', fg=typer.colors.BLUE, bold=True)
+
+		inputs = {}
+		input_definitions = workflow_obj.inputs_def  # Access inputs_def from the Workflow instance
+
+		if input_definitions:  # Check if the list is not empty
+			typer.echo()  # Add space
+			typer.echo(typer.style('Provide values for the following workflow inputs:', bold=True))
+			typer.echo()  # Add space
+
+			for input_def in input_definitions:
+				var_name_styled = typer.style(input_def.name, fg=typer.colors.CYAN, bold=True)
+				prompt_question = typer.style(f'Enter value for {var_name_styled}', bold=True)
+
+				var_type = input_def.type.lower()  # type is a direct attribute
+				is_required = input_def.required
+
+				type_info_str = f'type: {var_type}'
+				if is_required:
+					status_str = typer.style('required', fg=typer.colors.RED)
+				else:
+					status_str = typer.style('optional', fg=typer.colors.YELLOW)
+
+				# Add format information if available
+				format_info_str = ''
+				if hasattr(input_def, 'format') and input_def.format:
+					format_info_str = f', format: {typer.style(input_def.format, fg=typer.colors.GREEN)}'
+
+				full_prompt_text = f'{prompt_question} ({status_str}, {type_info_str}{format_info_str})'
+
+				input_val = None
+				if var_type == 'bool':
+					input_val = typer.confirm(full_prompt_text)
+				elif var_type == 'number':
+					input_val = typer.prompt(full_prompt_text, type=float)
+				elif var_type == 'string':  # Default to string for other unknown types as well
+					input_val = typer.prompt(full_prompt_text, type=str)
+				else:  # Should ideally not happen if schema is validated, but good to have a fallback
+					typer.secho(
+						f"Warning: Unknown type '{var_type}' for variable '{input_def.name}'. Treating as string.",
+						fg=typer.colors.YELLOW,
+					)
+					input_val = typer.prompt(full_prompt_text, type=str)
+
+				inputs[input_def.name] = input_val
+				typer.echo()  # Add space after each prompt
+		else:
+			typer.echo('No input schema found in the workflow, or no properties defined. Proceeding without inputs.')
+
+		typer.echo()  # Add space
+		typer.echo(typer.style('Running workflow with semantic abstraction (no AI)...', bold=True))
+
+		try:
+			# Call run_with_no_ai on the Workflow instance
+			result = await workflow_obj.run_with_no_ai(inputs=inputs, close_browser_at_end=True)
+
+			typer.secho('\nWorkflow execution completed!', fg=typer.colors.GREEN, bold=True)
+			typer.echo(typer.style('Result:', bold=True))
+			# Output the number of steps executed
+			typer.echo(f'{typer.style(str(len(result.step_results)), bold=True)} steps executed using semantic abstraction.')
+
+		except Exception as e:
+			typer.secho(f'Error running workflow: {e}', fg=typer.colors.RED)
+			raise typer.Exit(code=1)
+
+	return asyncio.run(_run_workflow_no_ai())
+
+
+@app.command(name='generate-semantic-mapping', help='Generate semantic mapping for a URL to help with workflow creation.')
+def generate_semantic_mapping_command(
+	url: str = typer.Argument(..., help='URL to generate semantic mapping for'),
+	output_file: Path = typer.Option(
+		None,
+		'--output',
+		'-o',
+		help='Output file to save the semantic mapping (optional)',
+	),
+):
+	"""
+	Generate a semantic mapping for a given URL to help with creating workflows.
+	This shows how visible text maps to selectors.
+	"""
+
+	async def _generate_mapping():
+		typer.echo(typer.style(f'Generating semantic mapping for: {url}', bold=True))
+		typer.echo()
+
+		try:
+			from workflow_use.workflow.semantic_extractor import SemanticExtractor
+			from browser_use import Browser
+			from patchright.async_api import async_playwright as patchright_async_playwright
+
+			playwright = await patchright_async_playwright().start()
+			browser = Browser(playwright=playwright)
+			extractor = SemanticExtractor()
+
+			await browser.start()
+			page = await browser.get_current_page()
+			await page.goto(url)
+			await page.wait_for_load_state()
+
+			# Generate semantic mapping
+			mapping = await extractor.extract_semantic_mapping(page)
+
+			typer.secho(f'Found {len(mapping)} interactive elements', fg=typer.colors.GREEN, bold=True)
+			typer.echo()
+
+			# Display mapping
+			typer.echo(typer.style('=== SEMANTIC MAPPING ===', bold=True))
+			typer.echo()
+
+			for text, element_info in mapping.items():
+				element_type = element_info['element_type']
+				selector = element_info['selectors']
+				class_name = element_info['class']
+				element_id = element_info['id']
+				
+				# Color code by element type
+				if element_type == 'button':
+					text_color = typer.colors.GREEN
+				elif element_type == 'input':
+					text_color = typer.colors.BLUE
+				elif element_type == 'select':
+					text_color = typer.colors.MAGENTA
+				else:
+					text_color = typer.colors.CYAN
+
+				typer.echo(f'{typer.style(text, fg=text_color, bold=True)}')
+				typer.echo(f'  Type: {element_type}')
+				typer.echo(f'  Class: {class_name or "(none)"}')
+				typer.echo(f'  ID: {element_id or "(none)"}')
+				typer.echo(f'  Selector: {selector}')
+				typer.echo()
+
+			# Save to file if requested
+			if output_file:
+				output_data = {}
+				for text, element_info in mapping.items():
+					output_data[text] = {
+						'class': element_info['class'],
+						'id': element_info['id'], 
+						'selectors': element_info['selectors']
+					}
+
+				with open(output_file, 'w') as f:
+					import json
+					json.dump(output_data, f, indent=2)
+
+				typer.secho(f'Semantic mapping saved to: {output_file}', fg=typer.colors.GREEN)
+
+			await browser.close()
+
+		except Exception as e:
+			typer.secho(f'Error generating semantic mapping: {e}', fg=typer.colors.RED)
+			raise typer.Exit(code=1)
+
+	return asyncio.run(_generate_mapping())
+
+
+@app.command(name='create-semantic-workflow', help='Create a workflow template using semantic text mapping.')
+def create_semantic_workflow_command(
+	url: str = typer.Argument(..., help='URL to create workflow for'),
+	output_file: Path = typer.Option(
+		None,
+		'--output',
+		'-o',
+		help='Output workflow file (defaults to semantic_workflow.json)',
+	),
+):
+	"""
+	Create a workflow template using semantic text mapping for a given URL.
+	This generates a template that users can customize.
+	"""
+
+	async def _create_semantic_workflow():
+		output_path = output_file or Path('semantic_workflow.json')
+		
+		typer.echo(typer.style(f'Creating semantic workflow for: {url}', bold=True))
+		typer.echo()
+
+		try:
+			from workflow_use.workflow.semantic_extractor import SemanticExtractor
+			from browser_use import Browser
+			from patchright.async_api import async_playwright as patchright_async_playwright
+
+			playwright = await patchright_async_playwright().start()
+			browser = Browser(playwright=playwright)
+			extractor = SemanticExtractor()
+
+			await browser.start()
+			page = await browser.get_current_page()
+			await page.goto(url)
+			await page.wait_for_load_state()
+
+			# Generate semantic mapping
+			mapping = await extractor.extract_semantic_mapping(page)
+
+			typer.secho(f'Found {len(mapping)} interactive elements', fg=typer.colors.GREEN, bold=True)
+			typer.echo()
+
+			# Show available elements
+			typer.echo(typer.style('Available elements for workflow:', bold=True))
+			for i, (text, element_info) in enumerate(mapping.items(), 1):
+				element_type = element_info['element_type']
+				
+				# Color code by element type
+				if element_type == 'button':
+					text_color = typer.colors.GREEN
+				elif element_type == 'input':
+					text_color = typer.colors.BLUE
+				elif element_type == 'select':
+					text_color = typer.colors.MAGENTA
+				else:
+					text_color = typer.colors.CYAN
+
+				typer.echo(f'{i:2}. {typer.style(text, fg=text_color)} ({element_type})')
+
+			typer.echo()
+
+			# Create basic workflow template
+			workflow_name = typer.prompt('Enter workflow name', default='Semantic Workflow')
+			workflow_description = typer.prompt('Enter workflow description', default='Automated workflow using semantic text mapping')
+
+			# Create template workflow
+			template = {
+				"workflow_analysis": f"Semantic workflow for {url}. Uses visible text to identify elements instead of CSS selectors.",
+				"name": workflow_name,
+				"description": workflow_description,
+				"version": "1.0",
+				"steps": [
+					{
+						"description": f"Navigate to {url}",
+						"type": "navigation",
+						"url": url
+					}
+				],
+				"input_schema": []
+			}
+
+			# Add some example steps as comments in the JSON
+			example_steps = []
+			for text, element_info in list(mapping.items())[:5]:  # Show first 5 elements as examples
+				element_type = element_info['element_type']
+				
+				if element_type == 'button':
+					example_steps.append({
+						"description": f"Click {text}",
+						"type": "click",
+						"target_text": text,
+						"_comment": "Remove this line - it's just an example"
+					})
+				elif element_type == 'input':
+					example_steps.append({
+						"description": f"Enter value into {text}",
+						"type": "input", 
+						"target_text": text,
+						"value": "{variable_name}",
+						"_comment": "Remove this line - it's just an example. Replace {variable_name} with actual variable."
+					})
+
+			template["example_steps_to_customize"] = example_steps
+
+			# Save template
+			with open(output_path, 'w') as f:
+				import json
+				json.dump(template, f, indent=2)
+
+			typer.secho(f'Workflow template created: {output_path}', fg=typer.colors.GREEN, bold=True)
+			typer.echo()
+			typer.echo(typer.style('Next steps:', bold=True))
+			typer.echo('1. Edit the workflow file to add your specific steps')
+			typer.echo('2. Use target_text field to reference visible text')
+			typer.echo('3. Add input_schema for dynamic values')
+			typer.echo('4. Test with: python cli.py run-workflow-no-ai your_workflow.json')
+
+			await browser.close()
+
+		except Exception as e:
+			typer.secho(f'Error creating semantic workflow: {e}', fg=typer.colors.RED)
+			raise typer.Exit(code=1)
+
+	return asyncio.run(_create_semantic_workflow())
+
+
 @app.command(name='mcp-server', help='Starts the MCP server which expose all the created workflows as tools.')
 def mcp_server_command(
 	port: int = typer.Option(

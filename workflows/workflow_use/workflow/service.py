@@ -713,6 +713,82 @@ class Workflow:
 			args_schema=InputModel,
 		)
 
+	async def run_with_no_ai(
+		self,
+		inputs: dict[str, Any] | None = None,
+		close_browser_at_end: bool = True,
+		cancel_event: asyncio.Event | None = None,
+		output_model: type[T] | None = None,
+	) -> WorkflowRunOutput[T]:
+		"""Execute the workflow using semantic abstraction without any AI/LLM involvement.
+		
+		This method uses semantic mapping to convert visible text to deterministic selectors,
+		avoiding expensive LLM calls and fragile CSS selectors.
+
+		Args:
+			inputs: Optional dictionary of workflow inputs
+			close_browser_at_end: Whether to close the browser when done
+			cancel_event: Optional event to signal cancellation
+			output_model: Optional Pydantic model class to convert results to
+
+		Returns:
+			WorkflowRunOutput containing all step results
+		"""
+		from workflow_use.workflow.semantic_executor import SemanticWorkflowExecutor
+		
+		runtime_inputs = inputs or {}
+		# 1. Validate inputs against definition
+		self._validate_inputs(runtime_inputs)
+		# 2. Initialize context with validated inputs
+		self.context = runtime_inputs.copy()  # Start with a fresh context
+
+		results: List[ActionResult | AgentHistoryList] = []
+
+		await self.browser.start()
+		semantic_executor = SemanticWorkflowExecutor(self.browser)
+		
+		try:
+			for step_index, step_dict in enumerate(self.schema.steps):
+				await asyncio.sleep(0.1)
+				await self.browser._wait_for_stable_network()
+
+				# Check if cancellation was requested
+				if cancel_event and cancel_event.is_set():
+					logger.info('Cancellation requested - stopping workflow execution')
+					break
+
+				# Use description from the step dictionary
+				step_description = step_dict.description or 'No description provided'
+				logger.info(f'--- Running Step {step_index + 1}/{len(self.schema.steps)} -- {step_description} ---')
+				
+				# Resolve placeholders using the current context (works on the dictionary)
+				step_resolved = self._resolve_placeholders(step_dict)
+
+				# Only process deterministic steps (no agent steps)
+				if step_resolved.type == 'agent':
+					raise Exception(f"Agent steps are not supported in run_with_no_ai mode. Step {step_index + 1} is an agent step.")
+
+				# Execute step using semantic executor
+				result = await semantic_executor.execute_step(step_resolved)
+
+				results.append(result)
+				# Persist outputs using the resolved step dictionary
+				self._store_output(step_resolved, result)
+				logger.info(f'--- Finished Step {step_index + 1} ---\n')
+
+			# Convert results to output model if requested
+			output_model_result: T | None = None
+			if output_model:
+				output_model_result = await self._convert_results_to_output_model(results, output_model)
+
+		finally:
+			# Clean-up browser after finishing workflow
+			if close_browser_at_end:
+				self.browser.browser_profile.keep_alive = False
+				await self.browser.close()
+
+		return WorkflowRunOutput(step_results=results, output_model=output_model_result)
+
 	async def run_as_tool(self, prompt: str) -> str:
 		"""
 		Run the workflow with a prompt and automatically parse the required variables.

@@ -17,8 +17,12 @@ class SelectorWorkflowSteps(BaseWorkflowStep):
 	cssSelector: Optional[str] = Field(None, description='CSS selector for the target element.')
 	xpath: Optional[str] = Field(None, description='XPath selector (often informational).')
 	elementTag: Optional[str] = Field(None, description='HTML tag (informational).')
-
-	elementHash: str = Field(..., description='Hash of the element.')
+	
+	# Semantic abstraction - use visible text as primary identifier
+	target_text: Optional[str] = Field(None, description='Visible text to identify the element (e.g., "Submit", "First Name", "Login Button").')
+	
+	# Make elementHash optional for semantic workflows
+	elementHash: Optional[str] = Field(None, description='Hash of the element (not required for semantic workflows).')
 
 
 # --- Agent Step ---
