@@ -53,17 +53,83 @@ class SemanticWorkflowExecutor:
         ]
         
         for selector in selectors_to_try:
-            if await self._wait_for_element(selector):
+            try:
+                page = await self.browser.get_current_page()
+                await page.wait_for_selector(selector, timeout=5000, state="visible")
+                
+                # Check if this selector resolves to multiple elements (strict mode violation)
+                elements = await page.query_selector_all(selector)
+                if len(elements) > 1:
+                    logger.warning(f"Selector {selector} matches {len(elements)} elements, skipping direct selector")
+                    continue
+                
                 logger.info(f"Found element using direct selector: {selector}")
                 return selector
+            except Exception as e:
+                logger.warning(f"Element not found with selector {selector}: {e}")
+                continue
         
         return None
+
+    async def _handle_strict_mode_violation(self, selector: str, target_text: str = None) -> Optional[str]:
+        """Handle cases where selector matches multiple elements."""
+        page = await self.browser.get_current_page()
+        
+        try:
+            elements = await page.query_selector_all(selector)
+            if len(elements) <= 1:
+                return selector  # No violation
+            
+            logger.warning(f"Selector {selector} matches {len(elements)} elements, trying to narrow down...")
+            
+            # For radio buttons, try to be more specific
+            if "radio" in selector.lower():
+                # Try to find radio button by value if target_text looks like a value
+                if target_text:
+                    value_selector = f'input[type="radio"][value="{target_text.lower()}"]'
+                    try:
+                        await page.wait_for_selector(value_selector, timeout=2000, state="visible")
+                        value_elements = await page.query_selector_all(value_selector)
+                        if len(value_elements) == 1:
+                            logger.info(f"Found specific radio button by value: {value_selector}")
+                            return value_selector
+                    except:
+                        pass
+                    
+                    # Try to find by label text
+                    try:
+                        label_locator = page.get_by_label(target_text, exact=False)
+                        count = await label_locator.count()
+                        if count == 1:
+                            logger.info(f"Found radio button by label: {target_text}")
+                            return f"xpath=//label[contains(text(), '{target_text}')]//input[@type='radio'] | //input[@type='radio' and @id=(//label[contains(text(), '{target_text}')]/@for)]"
+                    except:
+                        pass
+                
+                # For radio buttons, cannot resolve automatically, let the calling code handle it
+                logger.warning(f"Cannot automatically resolve radio button selector, returning None")
+                return None
+            
+            # For other elements, cannot resolve automatically either
+            logger.warning(f"Cannot automatically resolve selector, returning None")
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error handling strict mode violation: {e}")
+            return None
     
     async def _wait_for_element(self, selector: str, timeout_ms: int = 5000) -> bool:
         """Wait for element to be available."""
         try:
             page = await self.browser.get_current_page()
             await page.wait_for_selector(selector, timeout=timeout_ms, state="visible")
+            
+            # Check if the selector would cause strict mode violations
+            elements = await page.query_selector_all(selector)
+            if len(elements) > 1:
+                logger.warning(f"Selector {selector} matches {len(elements)} elements during wait")
+                return True  # Element exists, but we'll handle the strict mode later
+            
             return True
         except Exception as e:
             logger.warning(f"Element not found with selector {selector}: {e}")
@@ -142,8 +208,20 @@ class SemanticWorkflowExecutor:
             else:
                 raise Exception(f"Element not found: {selector_to_use}")
         
-        locator = page.locator(selector_to_use)
-        await locator.click(force=True)
+        # Try to click the element, with fallback to nth(0) if strict mode violation occurs
+        try:
+            locator = page.locator(selector_to_use)
+            await locator.click(force=True)
+        except Exception as click_error:
+            if "strict mode violation" in str(click_error).lower():
+                logger.warning(f"Strict mode violation during click, using first element: {click_error}")
+                first_locator = page.locator(selector_to_use).nth(0)
+                await first_locator.click(force=True)
+                msg = f"🖱️ Clicked element (first match due to strict mode): {target_identifier or step.description or selector_to_use}"
+                logger.info(msg)
+                return ActionResult(extracted_content=msg, include_in_memory=True)
+            else:
+                raise click_error
         
         msg = f"🖱️ Clicked element: {target_identifier or step.description or selector_to_use}"
         logger.info(msg)
@@ -211,14 +289,58 @@ class SemanticWorkflowExecutor:
         
         locator = page.locator(selector_to_use)
         
-        # Check if it's a SELECT element
-        is_select = await locator.evaluate('(el) => el.tagName === "SELECT"')
-        if is_select:
+        # Check element type to handle different input types properly
+        element_type = await locator.evaluate('(el) => ({ tagName: el.tagName, type: el.type, value: el.value })')
+        
+        if element_type['tagName'] == 'SELECT':
             return ActionResult(
                 extracted_content='Ignored input into select element',
                 include_in_memory=True,
             )
         
+        # Handle radio buttons and checkboxes
+        if element_type['type'] in ['radio', 'checkbox']:
+            # For radio buttons, find the one with matching value
+            if element_type['type'] == 'radio':
+                # Use a more specific selector that includes the value
+                name_attr = await locator.get_attribute('name')
+                if name_attr:
+                    radio_selector = f'input[name="{name_attr}"][value="{step.value}"]'
+                    radio_locator = page.locator(radio_selector)
+                    if await self._wait_for_element(radio_selector, 2000):
+                        await radio_locator.click(force=True)
+                        msg = f"🔘 Selected radio button '{step.value}' for: {target_identifier or step.description}"
+                        logger.info(msg)
+                        return ActionResult(extracted_content=msg, include_in_memory=True)
+                    else:
+                        # Fallback: look for label text that matches the value
+                        try:
+                            radio_by_label = page.get_by_label(step.value)
+                            await radio_by_label.click(force=True)
+                            msg = f"🔘 Selected radio button by label '{step.value}' for: {target_identifier or step.description}"
+                            logger.info(msg)
+                            return ActionResult(extracted_content=msg, include_in_memory=True)
+                        except:
+                            pass
+            
+            # For checkboxes, check if we want to check or uncheck
+            elif element_type['type'] == 'checkbox':
+                should_check = step.value.lower() in ['true', '1', 'on', 'yes', 'checked']
+                is_checked = await locator.is_checked()
+                
+                if should_check and not is_checked:
+                    await locator.check(force=True)
+                    msg = f"☑️ Checked checkbox: {target_identifier or step.description}"
+                elif not should_check and is_checked:
+                    await locator.uncheck(force=True)
+                    msg = f"☐ Unchecked checkbox: {target_identifier or step.description}"
+                else:
+                    msg = f"✓ Checkbox already in desired state: {target_identifier or step.description}"
+                
+                logger.info(msg)
+                return ActionResult(extracted_content=msg, include_in_memory=True)
+        
+        # Regular input handling for text fields, etc.
         await locator.fill(step.value)
         await asyncio.sleep(0.5)
         await locator.click(force=True)

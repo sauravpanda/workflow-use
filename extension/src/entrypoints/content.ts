@@ -234,6 +234,40 @@ function stopRecorder() {
   }
 }
 
+// --- Helper function to extract semantic information ---
+function extractSemanticInfo(element: HTMLElement) {
+  // Get associated label text
+  let labelText = '';
+  if ((element as any).id) {
+    const label = document.querySelector(`label[for="${(element as any).id}"]`);
+    if (label) labelText = label.textContent?.trim() || '';
+  }
+  
+  // Get parent context for additional semantic information
+  let parentText = '';
+  let parent = element.parentElement;
+  while (parent && !parentText && parent !== document.body) {
+    const text = parent.textContent?.trim() || '';
+    if (text && text.length < 100) {
+      parentText = text;
+    }
+    parent = parent.parentElement;
+  }
+  
+  return {
+    labelText,
+    textContent: element.textContent?.trim().slice(0, 200) || "",
+    placeholder: (element as any).placeholder || "",
+    title: element.title || "",
+    ariaLabel: element.getAttribute('aria-label') || "",
+    value: (element as any).value || "",
+    name: (element as any).name || "",
+    id: (element as any).id || "",
+    type: (element as any).type || "",
+    parentText
+  };
+}
+
 // --- Custom Click Handler ---
 function handleCustomClick(event: MouseEvent) {
   if (!isRecordingActive) return;
@@ -242,6 +276,17 @@ function handleCustomClick(event: MouseEvent) {
 
   try {
     const xpath = getXPath(targetElement);
+    const semanticInfo = extractSemanticInfo(targetElement);
+    
+    // Determine the best target_text for semantic targeting
+    const targetText = semanticInfo.labelText || 
+                      semanticInfo.textContent || 
+                      semanticInfo.placeholder || 
+                      semanticInfo.ariaLabel || 
+                      semanticInfo.name || 
+                      semanticInfo.id || 
+                      "";
+    
     const clickData = {
       timestamp: Date.now(),
       url: document.location.href, // Use document.location for main page URL
@@ -249,7 +294,10 @@ function handleCustomClick(event: MouseEvent) {
       xpath: xpath,
       cssSelector: getEnhancedCSSSelector(targetElement, xpath),
       elementTag: targetElement.tagName,
-      elementText: targetElement.textContent?.trim().slice(0, 200) || "",
+      elementText: semanticInfo.textContent,
+      // Semantic information for target_text based workflows
+      targetText: targetText,
+      semanticInfo: semanticInfo,
     };
     console.log("Sending CUSTOM_CLICK_EVENT:", clickData);
     chrome.runtime.sendMessage({
@@ -271,6 +319,16 @@ function handleInput(event: Event) {
 
   try {
     const xpath = getXPath(targetElement);
+    const semanticInfo = extractSemanticInfo(targetElement as HTMLElement);
+    
+    // Determine the best target_text for semantic targeting
+    const targetText = semanticInfo.labelText || 
+                      semanticInfo.placeholder || 
+                      semanticInfo.ariaLabel || 
+                      semanticInfo.name || 
+                      semanticInfo.id || 
+                      "";
+    
     const inputData = {
       timestamp: Date.now(),
       url: document.location.href,
@@ -279,6 +337,9 @@ function handleInput(event: Event) {
       cssSelector: getEnhancedCSSSelector(targetElement, xpath),
       elementTag: targetElement.tagName,
       value: isPassword ? "********" : targetElement.value,
+      // Semantic information for target_text based workflows
+      targetText: targetText,
+      semanticInfo: semanticInfo,
     };
     console.log("Sending CUSTOM_INPUT_EVENT:", inputData);
     chrome.runtime.sendMessage({

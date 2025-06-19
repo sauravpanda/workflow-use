@@ -6,6 +6,7 @@ export interface StoredCustomClickEvent {
   cssSelector?: string;
   elementTag: string;
   elementText: string;
+  targetText?: string; // Semantic targeting text
   tabId: number;
   messageType: "CUSTOM_CLICK_EVENT";
   screenshot?: string;
@@ -19,6 +20,7 @@ export interface StoredCustomInputEvent {
   cssSelector?: string;
   elementTag: string;
   value: string;
+  targetText?: string; // Semantic targeting text
   tabId: number;
   messageType: "CUSTOM_INPUT_EVENT";
   screenshot?: string;

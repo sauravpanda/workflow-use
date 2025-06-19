@@ -144,6 +144,257 @@ def _build_and_save_workflow_from_recording(
 		return None
 
 
+# --- Helper function for building semantic workflow from recording ---
+def _build_and_save_semantic_workflow_from_recording(
+	recording_path: Path,
+	default_save_dir: Path,
+	is_temp_recording: bool = False,
+) -> Path | None:
+	"""Builds a semantic workflow from a recording file using visible text mappings."""
+	from workflow_use.workflow.semantic_extractor import SemanticExtractor
+	
+	prompt_subject = 'recorded' if is_temp_recording else 'provided'
+	typer.echo()  # Add space
+	description: str = typer.prompt(typer.style(f'What is the purpose of this {prompt_subject} workflow?', bold=True))
+
+	typer.echo()  # Add space
+	output_dir_str: str = typer.prompt(
+		typer.style('Where would you like to save the final semantic workflow?', bold=True)
+		+ f" (e.g., ./my_workflows, press Enter for '{default_save_dir}')",
+		default=str(default_save_dir),
+	)
+	output_dir = Path(output_dir_str).resolve()
+	output_dir.mkdir(parents=True, exist_ok=True)
+
+	typer.echo(f'The final semantic workflow will be saved in: {typer.style(str(output_dir), fg=typer.colors.CYAN)}')
+	typer.echo()  # Add space
+
+	typer.echo(
+		f'Processing recording ({typer.style(str(recording_path.name), fg=typer.colors.MAGENTA)}) and building semantic workflow...'
+	)
+	
+	# Load the recording
+	try:
+		with open(recording_path, 'r') as f:
+			recording_data = json.load(f)
+	except FileNotFoundError:
+		typer.secho(
+			f'Error: Recording file not found at {recording_path}. Please ensure it exists.',
+			fg=typer.colors.RED,
+		)
+		return None
+	except Exception as e:
+		typer.secho(f'Error loading recording: {e}', fg=typer.colors.RED)
+		return None
+
+	# Convert recording to semantic workflow format
+	try:
+		semantic_workflow = asyncio.run(_convert_recording_to_semantic_workflow(recording_data, description))
+	except Exception as e:
+		typer.secho(f'Error converting to semantic workflow: {e}', fg=typer.colors.RED)
+		return None
+
+	if not semantic_workflow:
+		typer.secho(
+			f'Failed to build semantic workflow definition from the {prompt_subject} recording.',
+			fg=typer.colors.RED,
+		)
+		return None
+
+	typer.secho('Semantic workflow built successfully!', fg=typer.colors.GREEN, bold=True)
+	typer.echo()  # Add space
+
+	file_stem = recording_path.stem
+	if is_temp_recording:
+		file_stem = file_stem.replace('temp_recording_', '') or 'recorded'
+
+	default_workflow_filename = f'{file_stem}.semantic.workflow.json'
+	workflow_output_name: str = typer.prompt(
+		typer.style('Enter a name for the generated semantic workflow file', bold=True) + ' (e.g., my_search.semantic.workflow.json):',
+		default=default_workflow_filename,
+	)
+	# Ensure the file name ends with .json
+	if not workflow_output_name.endswith('.json'):
+		workflow_output_name = f'{workflow_output_name}.json'
+	final_workflow_path = output_dir / workflow_output_name
+
+	try:
+		with open(final_workflow_path, 'w') as f:
+			json.dump(semantic_workflow, f, indent=2)
+		typer.secho(
+			f'Final semantic workflow saved to: {typer.style(str(final_workflow_path.resolve()), fg=typer.colors.BRIGHT_GREEN, bold=True)}',
+			fg=typer.colors.GREEN,
+		)
+		return final_workflow_path
+	except Exception as e:
+		typer.secho(f'Error saving semantic workflow: {e}', fg=typer.colors.RED)
+		return None
+
+
+async def _convert_recording_to_semantic_workflow(recording_data, description):
+	"""Convert a recorded workflow to semantic format using target_text fields."""
+	from workflow_use.workflow.semantic_extractor import SemanticExtractor
+	
+	# Extract workflow metadata
+	workflow_name = recording_data.get('name', 'Recorded Workflow')
+	steps = recording_data.get('steps', [])
+	
+	if not steps:
+		raise Exception("No steps found in recording")
+
+	# Initialize semantic extractor
+	semantic_extractor = SemanticExtractor()
+	
+	# Start browser to process pages
+	playwright = await patchright_async_playwright().start()
+	browser = Browser(playwright=playwright)
+	
+	semantic_steps = []
+	current_url = None
+	semantic_mapping = {}
+	
+	try:
+		for step in steps:
+			step_type = step.get('type', '').lower()
+			
+			if step_type == 'navigation':
+				# Navigation step - extract semantic mapping for new page
+				current_url = step.get('url')
+				if current_url:
+					semantic_steps.append({
+						'description': f"Navigate to {current_url}",
+						'type': 'navigation',
+						'url': current_url
+					})
+					
+					# Extract semantic mapping for this page
+					try:
+						page = await browser.get_current_page()
+						await page.goto(current_url)
+						await page.wait_for_load_state()
+						semantic_mapping = await semantic_extractor.extract_semantic_mapping(page)
+						typer.echo(f"Extracted {len(semantic_mapping)} semantic elements from {current_url}")
+					except Exception as e:
+						typer.echo(f"Warning: Could not extract semantic mapping from {current_url}: {e}")
+						semantic_mapping = {}
+			
+			elif step_type in ['click', 'input', 'select', 'keypress']:
+				# Interactive step - convert to semantic format
+				semantic_step = await _convert_step_to_semantic(step, semantic_mapping)
+				if semantic_step:
+					semantic_steps.append(semantic_step)
+			
+			elif step_type == 'scroll':
+				# Keep scroll steps as-is
+				semantic_steps.append({
+					'description': step.get('description', 'Scroll page'),
+					'type': 'scroll',
+					'scrollX': step.get('scrollX', 0),
+					'scrollY': step.get('scrollY', 0)
+				})
+	
+	finally:
+		await browser.close()
+		await playwright.stop()
+	
+	# Build the semantic workflow
+	semantic_workflow = {
+		'workflow_analysis': f'Semantic version of recorded workflow. Uses visible text to identify elements instead of CSS selectors for improved reliability.',
+		'name': f'{workflow_name} (Semantic)',
+		'description': description,
+		'version': '1.0',
+		'steps': semantic_steps,
+		'input_schema': []  # Can be enhanced later with variable detection
+	}
+	
+	return semantic_workflow
+
+
+async def _convert_step_to_semantic(step, semantic_mapping):
+	"""Convert a single recorded step to semantic format."""
+	step_type = step.get('type', '').lower()
+	description = step.get('description', '')
+	
+	# Try to find the best semantic target_text for this step
+	target_text = None
+	
+	# Look for element text or other identifiers
+	element_text = step.get('elementText', '').strip()
+	css_selector = step.get('cssSelector', '')
+	xpath = step.get('xpath', '')
+	
+	if element_text:
+		# Try to find this text in our semantic mapping
+		target_text = _find_best_semantic_match(element_text, semantic_mapping)
+	
+	# If no good semantic match, try to extract from CSS selector
+	if not target_text and css_selector:
+		target_text = _extract_target_from_selector(css_selector)
+	
+	# Build the semantic step
+	semantic_step = {
+		'description': description or f'{step_type.title()} element',
+		'type': step_type
+	}
+	
+	if target_text:
+		semantic_step['target_text'] = target_text
+	elif css_selector:
+		# Fallback to original CSS selector if no semantic mapping available
+		semantic_step['cssSelector'] = css_selector
+	
+	# Add step-specific fields
+	if step_type == 'input' and 'value' in step:
+		semantic_step['value'] = step['value']
+	elif step_type == 'select' and 'selectedText' in step:
+		semantic_step['selectedText'] = step['selectedText']
+	elif step_type == 'keypress' and 'key' in step:
+		semantic_step['key'] = step['key']
+	
+	return semantic_step
+
+
+def _find_best_semantic_match(element_text, semantic_mapping):
+	"""Find the best semantic match for element text."""
+	if not element_text or not semantic_mapping:
+		return None
+	
+	element_text_lower = element_text.lower().strip()
+	
+	# Exact match first
+	for text_key in semantic_mapping.keys():
+		if text_key.lower() == element_text_lower:
+			return text_key
+	
+	# Partial match
+	for text_key in semantic_mapping.keys():
+		if element_text_lower in text_key.lower() or text_key.lower() in element_text_lower:
+			return text_key
+	
+	# If no good match, return original text (the semantic executor will try to find it)
+	return element_text
+
+
+def _extract_target_from_selector(css_selector):
+	"""Extract a target_text from CSS selector if possible."""
+	if not css_selector:
+		return None
+	
+	# Try to extract ID
+	if '#' in css_selector:
+		id_part = css_selector.split('#')[1].split('[')[0].split('.')[0]
+		if id_part:
+			return id_part
+	
+	# Try to extract name from attribute selector
+	if '[name=' in css_selector:
+		name_match = css_selector.split('[name=')[1].split(']')[0].strip('"\'')
+		if name_match:
+			return name_match
+	
+	return None
+
+
 @app.command(
 	name='create-workflow',
 	help='Records a new browser interaction and then builds a workflow definition.',
@@ -210,6 +461,80 @@ def create_workflow():
 
 
 @app.command(
+	name='create-workflow-no-ai',
+	help='Records a new browser interaction and builds a semantic workflow optimized for no-AI execution.',
+)
+def create_workflow_no_ai():
+	"""
+	Records browser actions and builds a semantic workflow using target_text fields 
+	instead of CSS selectors, optimized for run-workflow-no-ai execution.
+	"""
+	if not recording_service:
+		typer.secho(
+			'RecordingService not available. Cannot create workflow.',
+			fg=typer.colors.RED,
+		)
+		raise typer.Exit(code=1)
+
+	default_tmp_dir = get_default_save_dir()
+
+	typer.echo(typer.style('Starting semantic workflow recording session...', bold=True))
+	typer.echo('🎯 This will create a workflow optimized for semantic execution (no AI required)!')
+	typer.echo('Please follow instructions in the browser. Close the browser or follow prompts to stop recording.')
+	typer.echo()  # Add space
+
+	temp_recording_path = None
+	try:
+		captured_recording_model = asyncio.run(recording_service.capture_workflow())
+
+		if not captured_recording_model:
+			typer.secho(
+				'Recording session ended, but no workflow data was captured.',
+				fg=typer.colors.YELLOW,
+			)
+			raise typer.Exit(code=1)
+
+		typer.secho('Recording captured successfully!', fg=typer.colors.GREEN, bold=True)
+		typer.echo()  # Add space
+
+		with tempfile.NamedTemporaryFile(
+			mode='w',
+			suffix='.json',
+			prefix='temp_recording_',
+			delete=False,
+			dir=default_tmp_dir,
+			encoding='utf-8',
+		) as tmp_file:
+			try:
+				tmp_file.write(captured_recording_model.model_dump_json(indent=2))
+			except AttributeError:
+				json.dump(captured_recording_model, tmp_file, indent=2)
+			temp_recording_path = Path(tmp_file.name)
+
+		# Use the semantic workflow builder instead of the regular one
+		saved_path = _build_and_save_semantic_workflow_from_recording(temp_recording_path, default_tmp_dir, is_temp_recording=True)
+		if not saved_path:
+			typer.secho(
+				'Failed to complete semantic workflow creation after recording.',
+				fg=typer.colors.RED,
+			)
+			raise typer.Exit(code=1)
+		
+		# Show next steps
+		typer.echo()
+		typer.secho('🎉 Semantic workflow created successfully!', fg=typer.colors.GREEN, bold=True)
+		typer.echo()
+		typer.echo(typer.style('Next steps:', bold=True))
+		typer.echo(f'1. Test your workflow: {typer.style(f"python cli.py run-workflow-no-ai {saved_path.name}", fg=typer.colors.CYAN)}')
+		typer.echo('2. Edit the workflow file to add variables or customize steps')
+		typer.echo('3. The workflow uses visible text mappings for reliable execution!')
+
+	except Exception as e:
+		typer.secho(f'An error occurred during semantic workflow creation: {e}', fg=typer.colors.RED)
+		raise typer.Exit(code=1)
+
+
+@app.command(
 	name='build-from-recording',
 	help='Builds a workflow definition from an existing recording JSON file.',
 )
@@ -241,6 +566,49 @@ def build_from_recording_command(
 	if not saved_path:
 		typer.secho(f'Failed to build workflow from {recording_path.name}.', fg=typer.colors.RED)
 		raise typer.Exit(code=1)
+
+
+@app.command(
+	name='build-semantic-from-recording',
+	help='Builds a semantic workflow from an existing recording JSON file (optimized for no-AI execution).',
+)
+def build_semantic_from_recording_command(
+	recording_path: Path = typer.Argument(
+		...,
+		exists=True,
+		file_okay=True,
+		dir_okay=False,
+		readable=True,
+		resolve_path=True,
+		help='Path to the existing recording JSON file.',
+	),
+):
+	"""
+	Takes a path to a recording JSON file and builds a semantic workflow using target_text fields
+	instead of CSS selectors, optimized for run-workflow-no-ai execution.
+	"""
+	default_save_dir = get_default_save_dir()
+	typer.echo(
+		typer.style(
+			f'Building semantic workflow from recording: {typer.style(str(recording_path.resolve()), fg=typer.colors.MAGENTA)}',
+			bold=True,
+		)
+	)
+	typer.echo()  # Add space
+
+	saved_path = _build_and_save_semantic_workflow_from_recording(recording_path, default_save_dir, is_temp_recording=False)
+	if not saved_path:
+		typer.secho(f'Failed to build semantic workflow from {recording_path.name}.', fg=typer.colors.RED)
+		raise typer.Exit(code=1)
+	
+	# Show next steps
+	typer.echo()
+	typer.secho('🎉 Semantic workflow created successfully!', fg=typer.colors.GREEN, bold=True)
+	typer.echo()
+	typer.echo(typer.style('Next steps:', bold=True))
+	typer.echo(f'1. Test your workflow: {typer.style(f"python cli.py run-workflow-no-ai {saved_path.name}", fg=typer.colors.CYAN)}')
+	typer.echo('2. Edit the workflow file to add variables or customize steps')
+	typer.echo('3. The workflow uses visible text mappings for reliable execution!')
 
 
 @app.command(
@@ -519,7 +887,7 @@ def run_workflow_no_ai_command(
 
 		try:
 			# Call run_with_no_ai on the Workflow instance
-			result = await workflow_obj.run_with_no_ai(inputs=inputs, close_browser_at_end=True)
+			result = await workflow_obj.run_with_no_ai(inputs=inputs, close_browser_at_end=False)
 
 			typer.secho('\nWorkflow execution completed!', fg=typer.colors.GREEN, bold=True)
 			typer.echo(typer.style('Result:', bold=True))

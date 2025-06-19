@@ -236,6 +236,7 @@ export default defineBackground(() => {
               cssSelector: clickEvent.cssSelector,
               elementTag: clickEvent.elementTag,
               elementText: clickEvent.elementText,
+              targetText: clickEvent.targetText,
               screenshot: clickEvent.screenshot,
             };
             steps.push(step);
@@ -270,6 +271,7 @@ export default defineBackground(() => {
               (lastStep as InputStep).value = inputEvent.value;
               lastStep.timestamp = inputEvent.timestamp; // Update to latest timestamp
               (lastStep as InputStep).screenshot = inputEvent.screenshot; // Update to latest screenshot
+              (lastStep as InputStep).targetText = inputEvent.targetText;
             } else {
               // Add a new input step
               const newStep: InputStep = {
@@ -282,6 +284,7 @@ export default defineBackground(() => {
                 cssSelector: inputEvent.cssSelector,
                 elementTag: inputEvent.elementTag,
                 value: inputEvent.value,
+                targetText: inputEvent.targetText,
                 screenshot: inputEvent.screenshot,
               };
               steps.push(newStep);

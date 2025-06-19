@@ -37,6 +37,7 @@ export interface ClickStep extends BaseStep {
   cssSelector?: string; // Optional in source
   elementTag: string;
   elementText: string;
+  targetText?: string; // Semantic targeting text (label, placeholder, aria-label, etc.)
   screenshot?: string; // Optional in source
 }
 
@@ -48,6 +49,7 @@ export interface InputStep extends BaseStep {
   cssSelector?: string; // Optional in source
   elementTag: string;
   value: string;
+  targetText?: string; // Semantic targeting text (label, placeholder, aria-label, etc.)
   screenshot?: string; // Optional in source
 }
 

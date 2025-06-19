@@ -206,6 +206,11 @@ class SemanticExtractor:
                         if (el.name) selector += `[name="${el.name}"]`;
                         if (el.type) selector += `[type="${el.type}"]`;
                         
+                        // For radio buttons and checkboxes, add value to make selector unique
+                        if ((el.type === 'radio' || el.type === 'checkbox') && el.value) {
+                            selector += `[value="${el.value}"]`;
+                        }
+                        
                         // Only add valid CSS classes (avoid complex selectors with & or other special chars)
                         if (el.className) {
                             const classes = el.className.split(' ')
@@ -228,8 +233,16 @@ class SemanticExtractor:
                         fallbackSelector = `#${el.id}`;
                     } else if (el.name) {
                         fallbackSelector += `[name="${el.name}"]`;
+                        if (el.type) fallbackSelector += `[type="${el.type}"]`;
+                        // For radio buttons and checkboxes, include value in fallback too
+                        if ((el.type === 'radio' || el.type === 'checkbox') && el.value) {
+                            fallbackSelector += `[value="${el.value}"]`;
+                        }
                     } else if (el.type) {
                         fallbackSelector += `[type="${el.type}"]`;
+                        if ((el.type === 'radio' || el.type === 'checkbox') && el.value) {
+                            fallbackSelector += `[value="${el.value}"]`;
+                        }
                     }
                     
                     // Generate text-based XPath as another fallback
@@ -330,28 +343,82 @@ class SemanticExtractor:
         if target_normalized in mapping:
             return mapping[target_normalized]
         
-        # Partial match
+        # Case-insensitive exact match
+        target_lower = target_normalized.lower()
         for text, element_info in mapping.items():
-            if target_normalized in text.lower() or text.lower() in target_normalized.lower():
-                logger.info(f"Fuzzy matched '{target_text}' to '{text}'")
+            if text.lower() == target_lower:
                 return element_info
         
-        # Even fuzzier match - word overlap
-        target_words = set(target_normalized.lower().split())
+        # Partial match - but be more restrictive
         best_match = None
         best_score = 0
         
         for text, element_info in mapping.items():
-            text_words = set(text.lower().split())
-            overlap = len(target_words.intersection(text_words))
-            score = overlap / max(len(target_words), len(text_words))
+            text_lower = text.lower()
             
-            if score > best_score and score > 0.3:  # At least 30% word overlap
-                best_match = element_info
-                best_score = score
+            # Skip very short text matches (they're often generic like "on", "off", etc.)
+            if len(text.strip()) <= 2:
+                continue
+                
+            # Skip if the text is just a generic placeholder or fallback
+            if text.startswith('[') and text.endswith(']'):
+                continue
+            
+            # Check for meaningful substring matches
+            score = 0
+            if target_lower in text_lower:
+                # Target is contained in the element text - good match
+                score = len(target_lower) / len(text_lower)
+                if score > 0.3:  # At least 30% of the element text matches
+                    if score > best_score:
+                        best_match = element_info
+                        best_score = score
+            elif text_lower in target_lower:
+                # Element text is contained in target - only good if element text is meaningful
+                if len(text.strip()) >= 4:  # At least 4 characters for meaningful match
+                    score = len(text_lower) / len(target_lower)
+                    if score > 0.4:  # At least 40% of the target matches
+                        if score > best_score:
+                            best_match = element_info
+                            best_score = score
         
         if best_match:
-            logger.info(f"Fuzzy matched '{target_text}' with score {best_score}")
+            # Find the corresponding text key for logging
+            matched_text = ""
+            for text, element_info in mapping.items():
+                if element_info == best_match:
+                    matched_text = text
+                    break
+            logger.info(f"Fuzzy matched '{target_text}' to '{matched_text}' (score: {best_score:.2f})")
+            return best_match
+        
+        # Word-based overlap matching as final fallback
+        target_words = set(target_normalized.lower().split())
+        
+        for text, element_info in mapping.items():
+            # Skip very short text
+            if len(text.strip()) <= 2:
+                continue
+                
+            text_words = set(text.lower().split())
+            overlap = len(target_words.intersection(text_words))
+            
+            # Require at least 2 words to overlap, or 1 word if it's significant
+            if overlap >= 2 or (overlap == 1 and max(len(w) for w in target_words.intersection(text_words)) >= 4):
+                score = overlap / max(len(target_words), len(text_words))
+                
+                if score > best_score and score > 0.4:  # At least 40% word overlap
+                    best_match = element_info
+                    best_score = score
+        
+        if best_match:
+            # Find the corresponding text key for logging
+            matched_text = ""
+            for text, element_info in mapping.items():
+                if element_info == best_match:
+                    matched_text = text
+                    break
+            logger.info(f"Word-based fuzzy matched '{target_text}' to '{matched_text}' (score: {best_score:.2f})")
             return best_match
         
         return None 
