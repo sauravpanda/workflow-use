@@ -40,15 +40,7 @@ class SemanticWorkflowExecutor:
             for text, element_info in self.current_mapping.items():
                 logger.debug(f"'{text}' -> {element_info['selectors']} (fallback: {element_info.get('fallback_selector', 'none')})")
             logger.debug("=== End Semantic Mapping ===")
-        else:
-            # Print first few mappings for quick debugging
-            sample_mappings = list(self.current_mapping.items())[:5]
-            logger.info("Sample mappings:")
-            for text, element_info in sample_mappings:
-                logger.info(f"  '{text}' -> {element_info['selectors']}")
-            if len(self.current_mapping) > 5:
-                logger.info(f"  ... and {len(self.current_mapping) - 5} more")
-    
+       
     def _find_element_by_text(self, target_text: str) -> Optional[Dict]:
         """Find element by visible text using semantic mapping with improved fallback strategies."""
         if not target_text:
