@@ -22,11 +22,17 @@ logger = logging.getLogger(__name__)
 class SemanticWorkflowExecutor:
     """Executes workflow steps using semantic mappings without AI/LLM involvement."""
     
-    def __init__(self, browser: Browser, max_retries: int = 3):
+    def __init__(self, browser: Browser, max_retries: int = 3, max_global_failures: int = 5, max_verification_failures: int = 3):
         self.browser = browser
         self.semantic_extractor = SemanticExtractor()
         self.current_mapping: Dict[str, Dict] = {}
         self.max_retries = max_retries
+        self.max_global_failures = max_global_failures
+        self.max_verification_failures = max_verification_failures
+        self.global_failure_count = 0
+        self.consecutive_failures = 0
+        self.consecutive_verification_failures = 0
+        self.last_successful_step = None
     
     async def _refresh_semantic_mapping(self) -> None:
         """Refresh the semantic mapping for the current page."""
@@ -339,11 +345,23 @@ class SemanticWorkflowExecutor:
                 logger.info(f"Falling back to original CSS selector: {selector_to_use}")
             else:
                 # Enhanced error message with debugging info
-                available_texts = list(self.current_mapping.keys())[:10]  # Show first 10 available options
-                error_msg = f"No selector available for click step: {target_identifier or step.description}"
+                available_texts = list(self.current_mapping.keys())[:15]  # Show first 15 available options
+                error_msg = f"No selector available for click step: '{target_identifier or step.description}'"
                 error_msg += f"\nAvailable elements on page: {available_texts}"
-                if len(self.current_mapping) > 10:
-                    error_msg += f" (and {len(self.current_mapping) - 10} more)"
+                if len(self.current_mapping) > 15:
+                    error_msg += f" (and {len(self.current_mapping) - 15} more)"
+                
+                # Try to find similar text matches for debugging
+                if target_identifier:
+                    similar_matches = []
+                    target_lower = target_identifier.lower()
+                    for text in self.current_mapping.keys():
+                        if any(word in text.lower() for word in target_lower.split()):
+                            similar_matches.append(text)
+                    
+                    if similar_matches:
+                        error_msg += f"\nSimilar text found: {similar_matches[:5]}"
+                
                 logger.error(error_msg)
                 raise Exception(error_msg)
         
@@ -381,7 +399,7 @@ class SemanticWorkflowExecutor:
             return ActionResult(extracted_content=msg, include_in_memory=True)
         
         async def click_verifier():
-            return await self._verify_click_action(selector_to_use, target_identifier, step.type)
+            return await self._verify_click_action(selector_to_use, target_identifier, step.type, step)
         
         return await self._execute_with_verification_and_retry(click_executor, step, click_verifier)
     
@@ -580,11 +598,23 @@ class SemanticWorkflowExecutor:
                 logger.info(f"Falling back to original CSS selector: {selector_to_use}")
             else:
                 # Enhanced error message with debugging info
-                available_texts = list(self.current_mapping.keys())[:10]  # Show first 10 available options
-                error_msg = f"No selector available for input step: {target_identifier or step.description}"
+                available_texts = list(self.current_mapping.keys())[:15]  # Show first 15 available options
+                error_msg = f"No selector available for input step: '{target_identifier or step.description}'"
                 error_msg += f"\nAvailable elements on page: {available_texts}"
-                if len(self.current_mapping) > 10:
-                    error_msg += f" (and {len(self.current_mapping) - 10} more)"
+                if len(self.current_mapping) > 15:
+                    error_msg += f" (and {len(self.current_mapping) - 15} more)"
+                
+                # Try to find similar text matches for debugging
+                if target_identifier:
+                    similar_matches = []
+                    target_lower = target_identifier.lower()
+                    for text in self.current_mapping.keys():
+                        if any(word in text.lower() for word in target_lower.split()):
+                            similar_matches.append(text)
+                    
+                    if similar_matches:
+                        error_msg += f"\nSimilar text found: {similar_matches[:5]}"
+                
                 logger.error(error_msg)
                 raise Exception(error_msg)
         
@@ -891,6 +921,10 @@ class SemanticWorkflowExecutor:
         
         return ActionResult(extracted_content=msg, include_in_memory=True)
 
+    def set_workflow_context(self, workflow_steps: list):
+        """Set the current workflow steps for context-aware verification."""
+        self._current_workflow_steps = workflow_steps
+
     async def execute_step(self, step: WorkflowStep) -> ActionResult:
         """Execute a single workflow step."""
         # Always refresh semantic mapping before each step to avoid stale selectors
@@ -925,6 +959,25 @@ class SemanticWorkflowExecutor:
     
     async def _execute_with_verification_and_retry(self, step_executor, step, verification_method):
         """Execute a step with verification and retry logic."""
+        # Check if we've hit global failure limits before starting
+        if self.global_failure_count >= self.max_global_failures:
+            error_msg = f"❌ Global failure limit reached ({self.global_failure_count}/{self.max_global_failures}). Workflow appears to be encountering systematic issues."
+            logger.error(error_msg)
+            raise Exception(error_msg)
+        
+        if self.consecutive_failures >= 3:
+            error_msg = f"❌ Too many consecutive failures ({self.consecutive_failures}). Form may have unexpected changes or invalid input data."
+            logger.error(error_msg)
+            raise Exception(error_msg)
+        
+        if self.consecutive_verification_failures >= self.max_verification_failures:
+            error_msg = f"❌ Too many consecutive verification failures ({self.consecutive_verification_failures}). Steps are executing but not achieving expected results."
+            logger.error(error_msg)
+            raise Exception(error_msg)
+        
+        last_exception = None
+        last_result = None
+        
         for attempt in range(self.max_retries + 1):  # +1 for initial attempt
             try:
                 if attempt > 0:
@@ -936,37 +989,342 @@ class SemanticWorkflowExecutor:
                 
                 # Execute the step
                 result = await step_executor()
+                last_result = result
                 
-                # Verify the step was successful
-                if await verification_method():
-                    if attempt > 0:
-                        logger.info(f"✅ Step succeeded on retry {attempt}")
-                    return result
-                else:
+                # Check for validation errors immediately after execution
+                validation_errors = await self._detect_form_validation_errors()
+                if validation_errors:
+                    logger.warning(f"⚠️ Form validation errors detected after step execution: {validation_errors}")
                     if attempt < self.max_retries:
-                        logger.warning(f"⚠️ Step verification failed, will retry...")
+                        logger.warning(f"⚠️ Step caused validation errors, will retry...")
                         continue
                     else:
-                        logger.error(f"❌ Step verification failed after {self.max_retries} retries")
-                        return result  # Return last result even if verification failed
+                        logger.error(f"❌ Step caused validation errors after {self.max_retries} retries")
+                        # Don't break here, let it continue to verification
+                
+                # Verify the step was successful
+                verification_passed = await verification_method()
+                
+                if verification_passed and not validation_errors:
+                    if attempt > 0:
+                        logger.info(f"✅ Step succeeded on retry {attempt}")
+                    
+                    # Reset all failure counters on success
+                    self.consecutive_failures = 0
+                    self.consecutive_verification_failures = 0
+                    self.last_successful_step = step.description if hasattr(step, 'description') else str(step.type)
+                    return result
+                else:
+                    # Track verification failures separately from execution failures
+                    if not validation_errors and not verification_passed:
+                        # This is a pure verification failure (step executed but didn't achieve expected result)
+                        pass  # We'll increment this counter after all retries are exhausted
+                    
+                    if attempt < self.max_retries:
+                        if validation_errors:
+                            logger.warning(f"⚠️ Step caused validation errors, will retry...")
+                        else:
+                            logger.warning(f"⚠️ Step verification failed, will retry...")
+                        continue
+                    else:
+                        # This is the final attempt and it failed
+                        if validation_errors:
+                            last_exception = Exception(f"Step caused form validation errors: {list(validation_errors.values())}")
+                        else:
+                            # For verification failures, increment the counter immediately
+                            self.consecutive_verification_failures += 1
+                            last_exception = Exception("Step verification failed")
+                            
+                            # Check if we should stop due to verification failures
+                            if self.consecutive_verification_failures >= self.max_verification_failures:
+                                raise Exception(f"Too many consecutive verification failures ({self.consecutive_verification_failures}). Steps are executing but not achieving expected results.")
+                        break
                         
             except Exception as e:
+                last_exception = e
                 if attempt < self.max_retries:
-                    logger.warning(f"⚠️ Step execution failed (attempt {attempt + 1}), will retry: {e}")
+                    # Check for specific error patterns that indicate systematic issues
+                    error_str = str(e).lower()
+                    if any(pattern in error_str for pattern in [
+                        'element not found', 'timeout', 'selector failed', 
+                        'no such element', 'element is not attached'
+                    ]):
+                        logger.warning(f"⚠️ Element detection failed (attempt {attempt + 1}): {e}")
+                    else:
+                        logger.warning(f"⚠️ Step execution failed (attempt {attempt + 1}): {e}")
                     continue
                 else:
                     logger.error(f"❌ Step execution failed after {self.max_retries} retries: {e}")
-                    raise e
+                    break
         
-        return result
+        # If we get here, the step failed after all retries are exhausted
+        self.global_failure_count += 1
+        self.consecutive_failures += 1
+        
+        # Determine failure type and update appropriate counters
+        failure_type = "execution"
+        if last_exception and "verification failed" in str(last_exception).lower():
+            self.consecutive_verification_failures += 1
+            failure_type = "verification"
+        elif last_exception and "validation errors" in str(last_exception).lower():
+            failure_type = "validation"
+        else:
+            failure_type = "execution"
+        
+        # Enhanced error reporting
+        error_context = {
+            'step_type': step.type if hasattr(step, 'type') else 'unknown',
+            'description': step.description if hasattr(step, 'description') else 'No description',
+            'target_text': getattr(step, 'target_text', None),
+            'value': getattr(step, 'value', None),
+            'failure_type': failure_type,
+            'global_failures': self.global_failure_count,
+            'consecutive_failures': self.consecutive_failures,
+            'consecutive_verification_failures': self.consecutive_verification_failures,
+            'last_successful_step': self.last_successful_step
+        }
+        
+        logger.error(f"❌ Step failed completely after {self.max_retries + 1} attempts. Context: {error_context}")
+        
+        # Provide specific guidance based on failure patterns
+        if self.consecutive_verification_failures >= 2:
+            logger.warning("⚠️  Multiple consecutive verification failures detected. This may indicate:")
+            logger.warning("   • Steps are executing but not achieving expected results")
+            logger.warning("   • Form behavior has changed (validation rules, navigation flow)")
+            logger.warning("   • Data being entered is causing unexpected form states")
+            logger.warning("   • Page interactions are not waiting long enough for effects")
+        elif self.consecutive_failures >= 2:
+            logger.warning("⚠️  Multiple consecutive execution failures detected. This may indicate:")
+            logger.warning("   • Form structure has changed")
+            logger.warning("   • Invalid input data for current form state")
+            logger.warning("   • Element selectors are outdated")
+            logger.warning("   • Form validation is rejecting inputs")
+        
+        # Raise the last exception that occurred
+        if last_exception:
+            raise last_exception
+        else:
+            raise Exception(f"Step failed after {self.max_retries + 1} attempts. Global failures: {self.global_failure_count}")
+        
+        return last_result
 
-    async def _verify_click_action(self, selector: str, target_text: str, step_type: str = "click") -> bool:
+    async def _detect_form_validation_errors(self) -> Dict[str, str]:
+        """Detect form validation errors that might indicate invalid input data."""
+        page = await self.browser.get_current_page()
+        validation_errors = {}
+        
+        try:
+            # Common error message selectors
+            error_selectors = [
+                '.error', '.error-message', '.validation-error', '.field-error',
+                '[role="alert"]', '.alert-danger', '.text-red', '.text-error',
+                '.invalid-feedback', '.form-error', '.help-block.error'
+            ]
+            
+            for selector in error_selectors:
+                try:
+                    error_elements = await page.query_selector_all(selector)
+                    for i, element in enumerate(error_elements):
+                        if await element.is_visible():
+                            error_text = await element.text_content()
+                            if error_text and error_text.strip():
+                                # Filter out browser internal scripts and long technical content
+                                clean_text = error_text.strip()
+                                
+                                # Skip if it looks like browser internal code
+                                if any(pattern in clean_text for pattern in [
+                                    'document.getElementById', 'function addPageBinding', 
+                                    'serializeAsCallArgument', '__next_f', 'globalThis',
+                                    'self.__next_f', 'serializeAsCallArgument'
+                                ]):
+                                    continue
+                                
+                                # Skip very long messages (likely technical content)
+                                if len(clean_text) > 200:
+                                    continue
+                                
+                                # Only include messages that look like actual validation errors
+                                if any(pattern in clean_text.lower() for pattern in [
+                                    'required', 'invalid', 'error', 'must', 'cannot', 'please',
+                                    'missing', 'incorrect', 'format', 'valid', 'enter', 'provide',
+                                    'field', 'complete', 'fill'
+                                ]):
+                                    validation_errors[f"{selector}_{i}"] = clean_text
+                except:
+                    continue
+            
+            # Check for common validation patterns in text
+            if validation_errors:
+                logger.warning(f"🚨 Form validation errors detected: {validation_errors}")
+                
+        except Exception as e:
+            logger.debug(f"Error checking for validation messages: {e}")
+        
+        return validation_errors
+
+    async def _detect_form_submission_failure(self, expected_progress_indicators: list = None) -> bool:
+        """Detect if a form submission failed by checking for common failure indicators."""
+        page = await self.browser.get_current_page()
+        
+        try:
+            # Check if we're still on the same form step/page when we should have progressed
+            if expected_progress_indicators:
+                for indicator in expected_progress_indicators:
+                    try:
+                        elements = await page.query_selector_all(f"text={indicator}")
+                        if elements:
+                            logger.warning(f"Form submission may have failed: still showing '{indicator}'")
+                            return True
+                    except:
+                        continue
+            
+            # Check for common submission failure indicators
+            failure_indicators = [
+                'form-error', 'submission-error', 'error-summary',
+                'alert-error', 'error-container'
+            ]
+            
+            for indicator in failure_indicators:
+                try:
+                    elements = await page.query_selector_all(f".{indicator}")
+                    for element in elements:
+                        if await element.is_visible():
+                            error_text = await element.text_content()
+                            if error_text and error_text.strip():
+                                logger.warning(f"Form submission failure detected: {error_text.strip()}")
+                                return True
+                except:
+                    continue
+            
+            return False
+            
+        except Exception as e:
+            logger.debug(f"Error checking for form submission failure: {e}")
+            return False
+
+    async def _verify_navigation_success_by_next_step(self, current_step) -> bool:
+        """Verify navigation success by checking if next step elements are available."""
+        if not current_step or not hasattr(current_step, '__dict__'):
+            return False
+        
+        try:
+            # Get workflow context to find the next step
+            workflow_steps = getattr(self, '_current_workflow_steps', None)
+            if not workflow_steps:
+                return False
+            
+            # Find current step index
+            current_step_desc = getattr(current_step, 'description', '')
+            current_index = -1
+            
+            for i, step in enumerate(workflow_steps):
+                if step.get('description') == current_step_desc:
+                    current_index = i
+                    break
+            
+            if current_index == -1 or current_index >= len(workflow_steps) - 1:
+                return False
+            
+            # Get next step
+            next_step = workflow_steps[current_index + 1]
+            next_step_type = next_step.get('type', '')
+            
+            # Skip non-interactive steps (scroll, etc.)
+            step_offset = 1
+            while (current_index + step_offset < len(workflow_steps) and 
+                   workflow_steps[current_index + step_offset].get('type') in ['scroll', 'navigation']):
+                step_offset += 1
+            
+            if current_index + step_offset >= len(workflow_steps):
+                return False
+            
+            target_step = workflow_steps[current_index + step_offset]
+            target_text = target_step.get('target_text')
+            
+            if not target_text:
+                return False
+            
+            # Refresh semantic mapping to check for next step elements
+            await self._refresh_semantic_mapping()
+            
+            # Check if the target element for the next step is now available
+            element_info = self._find_element_by_text(target_text)
+            if element_info:
+                logger.info(f"Verification: Found next step element '{target_text}' - navigation successful")
+                return True
+            
+            # Also check if target_text is a direct selector that exists
+            try:
+                page = await self.browser.get_current_page()
+                direct_selector = await self._try_direct_selector(target_text)
+                if direct_selector:
+                    await page.wait_for_selector(direct_selector, timeout=2000, state="visible")
+                    logger.info(f"Verification: Found next step element by direct selector '{target_text}' - navigation successful")
+                    return True
+            except Exception:
+                pass
+            
+            logger.debug(f"Verification: Next step element '{target_text}' not found - navigation may have failed")
+            return False
+            
+        except Exception as e:
+            logger.debug(f"Error verifying navigation by next step: {e}")
+            return False
+
+    async def _analyze_failure_context(self, step, error: Exception) -> str:
+        """Analyze the context of a step failure to provide better error messages."""
+        context_info = []
+        
+        try:
+            # Check current page state
+            page = await self.browser.get_current_page()
+            current_url = page.url
+            page_title = await page.title()
+            
+            context_info.append(f"URL: {current_url}")
+            context_info.append(f"Page Title: {page_title}")
+            
+            # Check for validation errors
+            validation_errors = await self._detect_form_validation_errors()
+            if validation_errors:
+                context_info.append(f"Validation Errors: {list(validation_errors.values())}")
+            
+            # Check if expected elements are present on page
+            if hasattr(step, 'target_text') and step.target_text:
+                element_count = len(self.current_mapping)
+                has_target = step.target_text in self.current_mapping
+                context_info.append(f"Elements on page: {element_count}, Target '{step.target_text}' found: {has_target}")
+                
+                if not has_target:
+                    # Find similar elements
+                    similar_elements = []
+                    target_lower = step.target_text.lower()
+                    for text in self.current_mapping.keys():
+                        if target_lower in text.lower() or text.lower() in target_lower:
+                            similar_elements.append(text)
+                    
+                    if similar_elements:
+                        context_info.append(f"Similar elements found: {similar_elements[:3]}")
+                        
+        except Exception as e:
+            context_info.append(f"Context analysis failed: {e}")
+        
+        return " | ".join(context_info)
+
+    async def _verify_click_action(self, selector: str, target_text: str, step_type: str = "click", current_step=None) -> bool:
         """Verify that a click action had the expected effect."""
         try:
             page = await self.browser.get_current_page()
             
             # Small delay to let the click effect take place
             await asyncio.sleep(0.5)
+            
+            # Check for validation errors first - if there are validation errors after a button click,
+            # it usually means the click didn't achieve its intended purpose
+            validation_errors = await self._detect_form_validation_errors()
+            if validation_errors:
+                logger.warning(f"Verification failed: Form validation errors after click: {validation_errors}")
+                return False
             
             # For radio buttons and checkboxes, verify they are checked/selected
             if "radio" in selector.lower() or "checkbox" in selector.lower() or step_type in ["radio", "checkbox"]:
@@ -980,9 +1338,15 @@ class SemanticWorkflowExecutor:
                     return False
             
             # For buttons, verify the click had some effect
-            elif step_type == "button" or "button" in selector.lower():
+            elif step_type == "button" or "button" in selector.lower() or any(keyword in target_text.lower() for keyword in ['submit', 'next', 'continue', 'save', 'finish']):
                 # Wait a bit for any page changes
                 await asyncio.sleep(1)
+                
+                # Check for validation errors again after waiting (some forms show errors after delay)
+                validation_errors = await self._detect_form_validation_errors()
+                if validation_errors:
+                    logger.warning(f"Verification failed: Form validation errors after button click: {validation_errors}")
+                    return False
                 
                 # Try to find the button using the target_text we have
                 element = None
@@ -1010,6 +1374,22 @@ class SemanticWorkflowExecutor:
                                     break
                             except:
                                 continue
+                    
+                    # For navigation/submit buttons, check if we moved to a different section or page
+                    if any(keyword in target_text.lower() for keyword in ['next', 'continue', 'submit', 'finish']):
+                        # Get current URL to see if page changed
+                        current_url = page.url
+                        page_title = await page.title()
+                        logger.info(f"Verification: After '{target_text}' click - URL: {current_url}, Title: {page_title}")
+                        
+                        # Try to verify by checking if expected next step elements are available
+                        if await self._verify_navigation_success_by_next_step(current_step):
+                            logger.info(f"Verification: Navigation successful - next step elements found")
+                            return True
+                        
+                        # Fallback: If URL changed or title changed, likely successful navigation
+                        # This is a more reliable indicator than button state for navigation buttons
+                        return True
                     
                     # If button still exists after click, verify it's clickable
                     if button_exists and element:

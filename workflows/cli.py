@@ -6,6 +6,7 @@ import tempfile  # For temporary file handling
 import webbrowser
 from pathlib import Path
 
+import pandas as pd
 import typer
 from browser_use import Browser
 from langchain.chat_models.base import BaseChatModel
@@ -1581,6 +1582,382 @@ def create_semantic_workflow_command(
 	return asyncio.run(_create_semantic_workflow())
 
 
+@app.command(name='run-workflow-csv', help='Runs a workflow multiple times using input values from a CSV file.')
+def run_workflow_csv_command(
+	workflow_path: Path = typer.Argument(
+		...,
+		exists=True,
+		file_okay=True,
+		dir_okay=False,
+		readable=True,
+		help='Path to the .workflow.json file.',
+		show_default=False,
+	),
+	csv_path: Path = typer.Argument(
+		...,
+		exists=True,
+		file_okay=True,
+		dir_okay=False,
+		readable=True,
+		help='Path to the CSV file containing input values.',
+		show_default=False,
+	),
+	use_ai: bool = typer.Option(
+		False,
+		'--use-ai',
+		'-a',
+		help='Use AI-powered execution instead of semantic abstraction (requires OpenAI API key)',
+	),
+	max_parallel: int = typer.Option(
+		1,
+		'--max-parallel',
+		'-p',
+		help='Maximum number of parallel workflow executions (default: 1 for sequential execution)',
+		min=1,
+		max=5,
+	),
+	output_file: Path = typer.Option(
+		None,
+		'--output',
+		'-o',
+		help='Output file to save execution results (CSV format)',
+	),
+	start_row: int = typer.Option(
+		1,
+		'--start-row',
+		'-s',
+		help='Row number to start execution from (1-indexed, excluding header)',
+		min=1,
+	),
+	end_row: int = typer.Option(
+		None,
+		'--end-row',
+		'-e',
+		help='Row number to end execution at (1-indexed, excluding header). If not specified, runs all rows.',
+		min=1,
+	),
+):
+	"""
+	Executes a workflow multiple times using input values from a CSV file.
+	Each row in the CSV represents one execution with different input values.
+	CSV column headers should match the workflow input parameter names.
+	"""
+	
+	async def _run_workflow_csv():
+		import csv
+		import pandas as pd
+		from datetime import datetime
+		
+		typer.echo(
+			typer.style(f'Loading workflow from: {typer.style(str(workflow_path.resolve()), fg=typer.colors.MAGENTA)}', bold=True)
+		)
+		typer.echo(
+			typer.style(f'Loading CSV data from: {typer.style(str(csv_path.resolve()), fg=typer.colors.MAGENTA)}', bold=True)
+		)
+		typer.echo()
+		
+		# Load and validate CSV data
+		try:
+			df = pd.read_csv(csv_path)
+			if df.empty:
+				typer.secho('Error: CSV file is empty.', fg=typer.colors.RED)
+				raise typer.Exit(code=1)
+				
+			typer.secho(f'Loaded CSV with {len(df)} rows and {len(df.columns)} columns.', fg=typer.colors.GREEN)
+			typer.echo(f'Columns: {", ".join(df.columns.tolist())}')
+			typer.echo()
+			
+		except Exception as e:
+			typer.secho(f'Error loading CSV file: {e}', fg=typer.colors.RED)
+			raise typer.Exit(code=1)
+		
+		# Apply row filtering
+		original_row_count = len(df)
+		start_idx = start_row - 1  # Convert to 0-indexed
+		end_idx = end_row if end_row is None else end_row
+		
+		if start_idx >= len(df):
+			typer.secho(f'Error: Start row {start_row} is beyond the CSV data (only {len(df)} rows available).', fg=typer.colors.RED)
+			raise typer.Exit(code=1)
+		
+		if end_idx is not None:
+			if end_idx <= start_idx:
+				typer.secho(f'Error: End row ({end_row}) must be greater than start row ({start_row}).', fg=typer.colors.RED)
+				raise typer.Exit(code=1)
+			df = df.iloc[start_idx:end_idx]
+		else:
+			df = df.iloc[start_idx:]
+		
+		typer.echo(f'Processing rows {start_row} to {start_row + len(df) - 1} ({len(df)} total executions)')
+		typer.echo()
+		
+		# Load workflow
+		try:
+			playwright = await patchright_async_playwright().start()
+			browser = Browser(playwright=playwright)
+			
+			dummy_llm = None
+			if use_ai and llm_instance:
+				dummy_llm = llm_instance
+			elif use_ai:
+				typer.secho('Warning: AI execution requested but no LLM available. Falling back to semantic mode.', fg=typer.colors.YELLOW)
+			
+			workflow_obj = Workflow.load_from_file(
+				str(workflow_path),
+				browser=browser,
+				llm=dummy_llm,
+			)
+		except Exception as e:
+			typer.secho(f'Error loading workflow: {e}', fg=typer.colors.RED)
+			raise typer.Exit(code=1)
+			
+		typer.secho('Workflow loaded successfully.', fg=typer.colors.GREEN, bold=True)
+		
+		# Validate CSV columns against workflow input schema
+		input_definitions = workflow_obj.inputs_def
+		required_columns = set()
+		optional_columns = set()
+		
+		for input_def in input_definitions:
+			if input_def.required:
+				required_columns.add(input_def.name)
+			else:
+				optional_columns.add(input_def.name)
+		
+		csv_columns = set(df.columns.tolist())
+		missing_required = required_columns - csv_columns
+		extra_columns = csv_columns - required_columns - optional_columns
+		
+		if missing_required:
+			typer.secho(f'Error: Missing required columns in CSV: {", ".join(missing_required)}', fg=typer.colors.RED)
+			typer.echo(f'Required columns: {", ".join(required_columns)}')
+			typer.echo(f'Optional columns: {", ".join(optional_columns)}')
+			raise typer.Exit(code=1)
+		
+		if extra_columns:
+			typer.echo(f'Note: Extra columns in CSV will be ignored: {", ".join(extra_columns)}')
+		
+		execution_mode = "AI-powered" if use_ai and dummy_llm else "semantic abstraction (no AI)"
+		typer.secho(f'Using {execution_mode} execution mode.', fg=typer.colors.BLUE, bold=True)
+		typer.echo()
+		
+		# Prepare results tracking
+		results = []
+		start_time = datetime.now()
+		
+		# Execute workflows
+		if max_parallel == 1:
+			# Sequential execution
+			typer.echo(typer.style('Starting sequential execution...', bold=True))
+			for idx, row in df.iterrows():
+				typer.echo(f'\n--- Execution {idx + 1 - start_idx} of {len(df)} ---')
+				result = await _execute_single_workflow(workflow_obj, row, idx + 1, use_ai and dummy_llm)
+				results.append(result)
+				
+				# Check if we should stop execution due to critical failures
+				if result['failure_type'] in ['global_failure_limit', 'consecutive_failures']:
+					typer.echo()
+					typer.secho('🛑 STOPPING EXECUTION: Critical workflow failure detected.', fg=typer.colors.BRIGHT_RED, bold=True)
+					typer.echo(f'Reason: {result["error"]}')
+					typer.echo(f'Completed {len(results)} out of {len(df)} planned executions.')
+					break
+		else:
+			# Parallel execution (simplified for now)
+			typer.echo(typer.style(f'Starting parallel execution (max {max_parallel} concurrent)...', bold=True))
+			typer.echo('Note: Parallel execution is experimental and may cause browser conflicts.')
+			
+			# For now, implement as batched sequential to avoid browser conflicts
+			batch_size = max_parallel
+			for i in range(0, len(df), batch_size):
+				batch = df.iloc[i:i + batch_size]
+				typer.echo(f'\n--- Batch {i // batch_size + 1}: Processing rows {i + start_row} to {min(i + batch_size - 1 + start_row, start_row + len(df) - 1)} ---')
+				
+				for idx, row in batch.iterrows():
+					typer.echo(f'\nExecution {idx + 1 - start_idx} of {len(df)}')
+					result = await _execute_single_workflow(workflow_obj, row, idx + 1, use_ai and dummy_llm)
+					results.append(result)
+		
+		# Summary
+		end_time = datetime.now()
+		duration = end_time - start_time
+		
+		successful = sum(1 for r in results if r['status'] == 'success')
+		failed = len(results) - successful
+		
+		# Categorize failures
+		failure_types = {}
+		for result in results:
+			if result['status'] == 'failed':
+				failure_type = result.get('failure_type', 'other')
+				if failure_type not in failure_types:
+					failure_types[failure_type] = []
+				failure_types[failure_type].append(result)
+		
+		typer.echo('\n' + '='*60)
+		typer.secho('EXECUTION SUMMARY', fg=typer.colors.CYAN, bold=True)
+		typer.echo('='*60)
+		typer.echo(f'Total executions: {len(results)}')
+		typer.echo(f'Successful: {typer.style(str(successful), fg=typer.colors.GREEN, bold=True)}')
+		if failed > 0:
+			typer.echo(f'Failed: {typer.style(str(failed), fg=typer.colors.RED, bold=True)}')
+		typer.echo(f'Duration: {duration}')
+		typer.echo(f'Average per execution: {duration / len(results) if results else "N/A"}')
+		
+		if failed > 0:
+			typer.echo('\n' + '-'*40)
+			typer.secho('FAILURE ANALYSIS', fg=typer.colors.YELLOW, bold=True)
+			typer.echo('-'*40)
+			
+			# Show failure type breakdown
+			for failure_type, failed_results in failure_types.items():
+				count = len(failed_results)
+				if failure_type == 'global_failure_limit':
+					typer.secho(f'  🛑 Global failure limit: {count} (workflow overwhelmed)', fg=typer.colors.BRIGHT_RED)
+				elif failure_type == 'consecutive_failures':
+					typer.secho(f'  🚫 Consecutive failures: {count} (systematic issues)', fg=typer.colors.BRIGHT_RED)
+				elif failure_type == 'element_not_found':
+					typer.secho(f'  🔍 Element not found: {count} (form structure changed)', fg=typer.colors.RED)
+				elif failure_type == 'form_validation':
+					typer.secho(f'  📝 Form validation: {count} (invalid input data)', fg=typer.colors.YELLOW)
+				else:
+					typer.secho(f'  ❓ Other failures: {count}', fg=typer.colors.RED)
+			
+			# Provide actionable recommendations
+			typer.echo('\n' + '-'*40)
+			typer.secho('RECOMMENDATIONS', fg=typer.colors.CYAN, bold=True)
+			typer.echo('-'*40)
+			if 'global_failure_limit' in failure_types or 'consecutive_failures' in failure_types:
+				typer.secho('  • Check if the form structure has changed significantly', fg=typer.colors.CYAN)
+				typer.secho('  • Verify workflow file is compatible with current form version', fg=typer.colors.CYAN)
+				typer.secho('  • Consider re-recording the workflow if layout changed drastically', fg=typer.colors.CYAN)
+			if 'element_not_found' in failure_types:
+				typer.secho('  • Update element selectors in workflow file', fg=typer.colors.CYAN)
+				typer.secho('  • Re-record workflow if form layout changed', fg=typer.colors.CYAN)
+			if 'form_validation' in failure_types:
+				typer.secho('  • Check CSV data for invalid values (missing required fields, wrong formats)', fg=typer.colors.CYAN)
+				typer.secho('  • Verify data types match form expectations', fg=typer.colors.CYAN)
+				typer.secho('  • Check for proper validation rules in the target form', fg=typer.colors.CYAN)
+		
+		# Save results if requested
+		if output_file:
+			try:
+				results_df = pd.DataFrame(results)
+				results_df.to_csv(output_file, index=False)
+				typer.secho(f'\nResults saved to: {output_file}', fg=typer.colors.GREEN, bold=True)
+			except Exception as e:
+				typer.secho(f'Error saving results: {e}', fg=typer.colors.RED)
+		
+		if failed > 0:
+			raise typer.Exit(code=1)
+	
+	async def _execute_single_workflow(workflow_obj, row_data, row_number, use_ai_mode):
+		"""Execute a single workflow with the given row data."""
+		from datetime import datetime
+		start_time = datetime.now()
+		
+		# Convert row data to inputs dictionary
+		inputs = {}
+		for input_def in workflow_obj.inputs_def:
+			column_name = input_def.name
+			if column_name in row_data:
+				raw_value = row_data[column_name]
+				
+				# Handle NaN values
+				if pd.isna(raw_value):
+					if input_def.required:
+						typer.secho(f'  Error: Required field "{column_name}" is empty in row {row_number}', fg=typer.colors.RED)
+						return {
+							'row_number': row_number,
+							'status': 'failed',
+							'error': f'Required field "{column_name}" is empty',
+							'duration': 0,
+							'steps_executed': 0,
+							**dict(row_data)
+						}
+					else:
+						continue  # Skip optional empty fields
+				
+				# Type conversion
+				try:
+					if input_def.type.lower() == 'bool':
+						inputs[column_name] = str(raw_value).lower() in ['true', '1', 'yes', 'on']
+					elif input_def.type.lower() == 'number':
+						inputs[column_name] = float(raw_value)
+					else:  # string or default
+						inputs[column_name] = str(raw_value)
+				except (ValueError, TypeError) as e:
+					typer.secho(f'  Error: Cannot convert "{raw_value}" to {input_def.type} for field "{column_name}"', fg=typer.colors.RED)
+					return {
+						'row_number': row_number,
+						'status': 'failed',
+						'error': f'Type conversion error for field "{column_name}": {e}',
+						'duration': 0,
+						'steps_executed': 0,
+						**dict(row_data)
+					}
+		
+		typer.echo(f'  Inputs: {inputs}')
+		
+		# Execute workflow
+		try:
+			if use_ai_mode:
+				result = await workflow_obj.run(inputs=inputs, close_browser_at_end=False)
+			else:
+				result = await workflow_obj.run_with_no_ai(inputs=inputs, close_browser_at_end=False)
+			
+			end_time = datetime.now()
+			duration = end_time - start_time
+			
+			typer.secho(f'  ✅ Success: {len(result.step_results)} steps executed in {duration}', fg=typer.colors.GREEN)
+			
+			return {
+				'row_number': row_number,
+				'status': 'success',
+				'error': None,
+				'duration': str(duration),
+				'steps_executed': len(result.step_results),
+				'failure_type': None,
+				**dict(row_data)
+			}
+			
+		except Exception as e:
+			end_time = datetime.now()
+			duration = end_time - start_time
+			
+			# Categorize the error type for better reporting
+			error_str = str(e).lower()
+			if 'global failure limit' in error_str:
+				failure_type = 'global_failure_limit'
+				typer.secho(f'  🛑 CRITICAL: {str(e)[:100]}{"..." if len(str(e)) > 100 else ""}', fg=typer.colors.BRIGHT_RED)
+			elif 'consecutive verification failures' in error_str:
+				failure_type = 'verification_failures'
+				typer.secho(f'  🔄 VERIFICATION: {str(e)[:100]}{"..." if len(str(e)) > 100 else ""}', fg=typer.colors.BRIGHT_RED)
+			elif 'consecutive failures' in error_str:
+				failure_type = 'consecutive_failures'
+				typer.secho(f'  🚫 SYSTEMATIC: {str(e)[:100]}{"..." if len(str(e)) > 100 else ""}', fg=typer.colors.BRIGHT_RED)
+			elif any(pattern in error_str for pattern in ['element not found', 'timeout', 'selector failed']):
+				failure_type = 'element_not_found'
+				typer.secho(f'  🔍 ELEMENT: {str(e)[:100]}{"..." if len(str(e)) > 100 else ""}', fg=typer.colors.RED)
+			elif 'validation' in error_str:
+				failure_type = 'form_validation'
+				typer.secho(f'  📝 VALIDATION: {str(e)[:100]}{"..." if len(str(e)) > 100 else ""}', fg=typer.colors.YELLOW)
+			else:
+				failure_type = 'other'
+				typer.secho(f'  ❌ Failed: {str(e)[:100]}{"..." if len(str(e)) > 100 else ""}', fg=typer.colors.RED)
+			
+			return {
+				'row_number': row_number,
+				'status': 'failed',
+				'error': str(e),
+				'duration': str(duration),
+				'steps_executed': 0,
+				'failure_type': failure_type,
+				**dict(row_data)
+			}
+	
+	return asyncio.run(_run_workflow_csv())
+
+
 @app.command(name='mcp-server', help='Starts the MCP server which expose all the created workflows as tools.')
 def mcp_server_command(
 	port: int = typer.Option(
@@ -1631,6 +2008,122 @@ def launch_gui():
 		typer.echo(typer.style('\nShutting down servers...', fg=typer.colors.RED, bold=True))
 		backend.terminate()
 		frontend.terminate()
+
+
+@app.command(name='generate-csv-template', help='Generate a CSV template file for a workflow to help with bulk execution.')
+def generate_csv_template_command(
+	workflow_path: Path = typer.Argument(
+		...,
+		exists=True,
+		file_okay=True,
+		dir_okay=False,
+		readable=True,
+		help='Path to the .workflow.json file.',
+		show_default=False,
+	),
+	output_file: Path = typer.Option(
+		None,
+		'--output',
+		'-o',
+		help='Output CSV template file path (defaults to workflow_name_template.csv)',
+	),
+	num_examples: int = typer.Option(
+		3,
+		'--examples',
+		'-n',
+		help='Number of example rows to include in the template',
+		min=1,
+		max=10,
+	),
+):
+	"""
+	Generate a CSV template file for a workflow based on its input schema.
+	This helps users understand the required CSV format for bulk execution.
+	"""
+	
+	typer.echo(
+		typer.style(f'Loading workflow from: {typer.style(str(workflow_path.resolve()), fg=typer.colors.MAGENTA)}', bold=True)
+	)
+	
+	try:
+		# Load workflow to get input schema
+		with open(workflow_path, 'r') as f:
+			workflow_data = json.load(f)
+		
+		workflow_name = workflow_data.get('name', 'workflow')
+		input_schema = workflow_data.get('input_schema', [])
+		
+		if not input_schema:
+			typer.secho('Warning: Workflow has no input schema defined. Creating a basic template.', fg=typer.colors.YELLOW)
+			# Create a basic template anyway
+			template_data = {'example_field': [f'example_value_{i+1}' for i in range(num_examples)]}
+		else:
+			# Create template based on input schema
+			template_data = {}
+			
+			for input_def in input_schema:
+				column_name = input_def['name']
+				field_type = input_def.get('type', 'string').lower()
+				is_required = input_def.get('required', False)
+				field_format = input_def.get('format', '')
+				
+				# Generate example values based on type and format
+				example_values = []
+				for i in range(num_examples):
+					if field_type == 'bool':
+						example_values.append(True if i % 2 == 0 else False)
+					elif field_type == 'number':
+						example_values.append(round(10.5 + i * 2.3, 2))
+					else:  # string
+						if 'email' in field_format.lower() or 'email' in column_name.lower():
+							example_values.append(f'user{i+1}@example.com')
+						elif 'name' in column_name.lower():
+							names = ['John Doe', 'Jane Smith', 'Bob Johnson']
+							example_values.append(names[i % len(names)])
+						elif 'phone' in column_name.lower():
+							example_values.append(f'+1-555-000-{1000 + i}')
+						elif 'url' in column_name.lower() or 'website' in column_name.lower():
+							example_values.append(f'https://example{i+1}.com')
+						else:
+							example_values.append(f'{column_name}_value_{i+1}')
+				
+				template_data[column_name] = example_values
+		
+		# Create DataFrame and save as CSV
+		template_df = pd.DataFrame(template_data)
+		
+		# Determine output file path
+		if output_file is None:
+			safe_name = workflow_name.replace(' ', '_').replace('/', '_').replace('\\', '_')
+			output_file = workflow_path.parent / f'{safe_name}_template.csv'
+		
+		template_df.to_csv(output_file, index=False)
+		
+		typer.secho(f'CSV template generated successfully!', fg=typer.colors.GREEN, bold=True)
+		typer.echo(f'Template saved to: {typer.style(str(output_file.resolve()), fg=typer.colors.CYAN)}')
+		typer.echo()
+		
+		# Display template info
+		typer.echo(typer.style('Template columns:', bold=True))
+		for input_def in input_schema:
+			column_name = input_def['name']
+			field_type = input_def.get('type', 'string')
+			is_required = input_def.get('required', False)
+			status = typer.style('required', fg=typer.colors.RED) if is_required else typer.style('optional', fg=typer.colors.YELLOW)
+			typer.echo(f'  • {typer.style(column_name, fg=typer.colors.CYAN)} ({field_type}, {status})')
+		
+		typer.echo()
+		typer.echo(typer.style('Usage:', bold=True))
+		typer.echo(f'1. Edit the CSV file: {output_file}')
+		typer.echo(f'2. Add your data rows (replace the example values)')
+		typer.echo(f'3. Run: python cli.py run-workflow-csv {workflow_path} {output_file}')
+		
+	except Exception as e:
+		typer.secho(f'Error generating CSV template: {e}', fg=typer.colors.RED)
+		raise typer.Exit(code=1)
+
+
+
 
 
 if __name__ == '__main__':
