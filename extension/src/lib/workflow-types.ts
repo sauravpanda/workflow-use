@@ -1,6 +1,7 @@
 // --- Workflow Format ---
 
 export interface Workflow {
+  workflow_analysis?: string; // Analysis of the workflow for semantic targeting
   steps: Step[];
   name: string; // Consider how to populate these fields
   description: string; // Consider how to populate these fields
@@ -8,13 +9,23 @@ export interface Workflow {
   input_schema: [];
 }
 
+// Radio button specific information
+export interface RadioButtonInfo {
+  fieldName: string; // The group/field name (e.g., "Marital Status")
+  optionValue: string; // The specific option (e.g., "Married")
+  allOptions: string[]; // All possible values in the group
+}
+
 export type Step =
   | NavigationStep
   | ClickStep
   | InputStep
+  | RadioStep
+  | SelectStep
+  | CheckboxStep
   | KeyPressStep
   | ScrollStep;
-// Add other step types here as needed, e.g., SelectStep, TabCreatedStep etc.
+// Add other step types here as needed, e.g., TabCreatedStep etc.
 
 export interface BaseStep {
   type: string;
@@ -38,6 +49,7 @@ export interface ClickStep extends BaseStep {
   elementTag: string;
   elementText: string;
   targetText?: string; // Semantic targeting text (label, placeholder, aria-label, etc.)
+  radioButtonInfo?: RadioButtonInfo; // Enhanced radio button information
   screenshot?: string; // Optional in source
 }
 
@@ -72,8 +84,46 @@ export interface ScrollStep extends BaseStep {
   // Note: url might be missing if scroll happens on initial load before meta event?
 }
 
+export interface RadioStep extends BaseStep {
+  type: "radio";
+  url: string;
+  frameUrl: string;
+  xpath: string;
+  cssSelector?: string;
+  fieldName: string; // The group name (e.g., "Gender")
+  selectedOption: string; // The selected value (e.g., "Male")
+  options: string[]; // All available options in the group
+  targetText?: string;
+  screenshot?: string;
+}
+
+export interface SelectStep extends BaseStep {
+  type: "select";
+  url: string;
+  frameUrl: string;
+  xpath: string;
+  cssSelector?: string;
+  fieldName: string; // The select field name/label
+  selectedOption: string; // The selected text
+  selectedValue: string; // The selected value
+  options: Array<{text: string, value: string}>; // All options
+  targetText?: string;
+  screenshot?: string;
+}
+
+export interface CheckboxStep extends BaseStep {
+  type: "checkbox";
+  url: string;
+  frameUrl: string;
+  xpath: string;
+  cssSelector?: string;
+  fieldName: string;
+  checked: boolean;
+  targetText?: string;
+  screenshot?: string;
+}
+
 // Potential future step types based on StoredEvent
-// export interface SelectStep extends BaseStep { ... }
 // export interface TabCreatedStep extends BaseStep { ... }
 // export interface TabActivatedStep extends BaseStep { ... }
 // export interface TabRemovedStep extends BaseStep { ... }

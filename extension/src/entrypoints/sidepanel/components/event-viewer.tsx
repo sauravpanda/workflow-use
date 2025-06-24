@@ -32,23 +32,36 @@ const StepCard: React.FC<{
     switch (step.type) {
       case "click": {
         const s = step as ClickStep;
+        // Enhanced display for radio buttons
+        if (s.radioButtonInfo && s.radioButtonInfo.fieldName && s.radioButtonInfo.optionValue) {
+          return (
+            <div className="flex items-center space-x-2">
+              <span className="text-lg">📻</span>
+              <span className="truncate">
+                Select <strong>{s.radioButtonInfo.optionValue}</strong> for <strong>{s.radioButtonInfo.fieldName}</strong>
+              </span>
+            </div>
+          );
+        }
+        // Standard click display
+        const targetDescription = s.targetText || s.elementText || s.elementTag;
         return (
           <div className="flex items-center space-x-2">
             <span className="text-lg">🖱️</span>
             <span className="truncate">
-              Click on <strong>{s.elementTag}</strong>
-              {s.elementText && `: "${s.elementText}"`}
+              Click on <strong>{targetDescription}</strong>
             </span>
           </div>
         );
       }
       case "input": {
         const s = step as InputStep;
+        const targetDescription = s.targetText || s.elementTag;
         return (
           <div className="flex items-center space-x-2">
             <span className="text-lg">⌨️</span>
             <span className="truncate">
-              Input into <strong>{s.elementTag}</strong>: "{s.value}"
+              Input into <strong>{targetDescription}</strong>: "{s.value}"
             </span>
           </div>
         );
@@ -137,6 +150,24 @@ const StepCard: React.FC<{
               <p>
                 <strong>Element:</strong> {s.elementTag}
               </p>
+            )}
+            {(s as ClickStep | InputStep).targetText && (
+              <p>
+                <strong>Target Text:</strong> {(s as ClickStep | InputStep).targetText}
+              </p>
+            )}
+            {(s as ClickStep).radioButtonInfo && (
+              <div>
+                <p>
+                  <strong>Field Name:</strong> {(s as ClickStep).radioButtonInfo?.fieldName}
+                </p>
+                <p>
+                  <strong>Selected Option:</strong> {(s as ClickStep).radioButtonInfo?.optionValue}
+                </p>
+                <p>
+                  <strong>All Options:</strong> {(s as ClickStep).radioButtonInfo?.allOptions?.join(', ')}
+                </p>
+              </div>
             )}
             {(s as ClickStep).elementText && (
               <p>

@@ -149,6 +149,8 @@ def _build_and_save_semantic_workflow_from_recording(
 	recording_path: Path,
 	default_save_dir: Path,
 	is_temp_recording: bool = False,
+	simulate_interactions: bool = False,
+	auto_fix_navigation: bool = False,
 ) -> Path | None:
 	"""Builds a semantic workflow from a recording file using visible text mappings."""
 	from workflow_use.workflow.semantic_extractor import SemanticExtractor
@@ -189,7 +191,7 @@ def _build_and_save_semantic_workflow_from_recording(
 
 	# Convert recording to semantic workflow format
 	try:
-		semantic_workflow = asyncio.run(_convert_recording_to_semantic_workflow(recording_data, description))
+		semantic_workflow = asyncio.run(_convert_recording_to_semantic_workflow(recording_data, description, simulate_interactions, auto_fix_navigation))
 	except Exception as e:
 		typer.secho(f'Error converting to semantic workflow: {e}', fg=typer.colors.RED)
 		return None
@@ -231,7 +233,149 @@ def _build_and_save_semantic_workflow_from_recording(
 		return None
 
 
-async def _convert_recording_to_semantic_workflow(recording_data, description):
+def _fix_missing_navigation_steps(steps):
+	"""Automatically detect and fix missing navigation steps in multi-page forms."""
+	if not steps:
+		return steps
+	
+	fixed_steps = []
+	current_page_url = None
+	
+	for i, step in enumerate(steps):
+		step_type = step.get('type', '').lower()
+		step_url = step.get('url', '')
+		
+		# Track navigation steps
+		if step_type == 'navigation':
+			current_page_url = step_url
+			fixed_steps.append(step)
+			continue
+		
+		# For interactive steps, check if we need to add missing navigation
+		if step_type in ['click', 'input', 'select', 'keypress']:
+			# If step's URL is different from current page, we need navigation
+			if step_url and current_page_url and step_url != current_page_url:
+				# Check if this looks like a form progression (common patterns)
+				if _is_form_progression(current_page_url, step_url):
+					# Try to infer the missing navigation button
+					navigation_step = _infer_navigation_step(current_page_url, step_url, steps, i)
+					if navigation_step:
+						typer.echo(f"🔧 Auto-fixing: Adding missing navigation from {current_page_url.split('/')[-1]} to {step_url.split('/')[-1]}")
+						fixed_steps.append(navigation_step)
+						current_page_url = step_url
+				else:
+					# Add explicit navigation step
+					fixed_steps.append({
+						'description': f"Navigate to {step_url}",
+						'type': 'navigation', 
+						'url': step_url
+					})
+					current_page_url = step_url
+			
+			fixed_steps.append(step)
+		else:
+			# Non-interactive steps (scroll, etc.)
+			fixed_steps.append(step)
+	
+	return fixed_steps
+
+
+def _is_form_progression(from_url, to_url):
+	"""Check if this looks like a multi-step form progression."""
+	if not from_url or not to_url:
+		return False
+	
+	# Common form progression patterns
+	form_patterns = [
+		('personal-info', 'contact-info'),
+		('contact-info', 'employment-info'), 
+		('employment-info', 'review'),
+		('step-1', 'step-2'),
+		('step-2', 'step-3'),
+		('page-1', 'page-2'),
+		('page-2', 'page-3'),
+	]
+	
+	from_path = from_url.split('/')[-1] 
+	to_path = to_url.split('/')[-1]
+	
+	for from_pattern, to_pattern in form_patterns:
+		if from_pattern in from_path and to_pattern in to_path:
+			return True
+	
+	return False
+
+
+def _infer_navigation_step(from_url, to_url, all_steps, current_index):
+	"""Infer the missing navigation button based on URL progression."""
+	from_path = from_url.split('/')[-1]
+	to_path = to_url.split('/')[-1]
+	
+	# Look for navigation buttons that might have been clicked around this time
+	search_range = 5  # Look 5 steps before and after
+	start_idx = max(0, current_index - search_range)
+	end_idx = min(len(all_steps), current_index + search_range)
+	
+	for i in range(start_idx, end_idx):
+		step = all_steps[i]
+		if step.get('type') == 'click':
+			target_text = (step.get('target_text') or step.get('targetText') or '').lower()
+			
+			# Common navigation button patterns
+			next_patterns = ['next', 'continue', 'proceed', 'forward']
+			
+			# Check if this looks like a navigation button for our target page
+			if any(pattern in target_text for pattern in next_patterns):
+				# Try to match the destination
+				if 'contact' in target_text and 'contact' in to_path:
+					return {
+						'description': 'Click navigation button',
+						'type': 'click',
+						'target_text': step.get('target_text') or step.get('targetText'),
+						'url': from_url
+					}
+				elif 'employment' in target_text and 'employment' in to_path:
+					return {
+						'description': 'Click navigation button', 
+						'type': 'click',
+						'target_text': step.get('target_text') or step.get('targetText'),
+						'url': from_url
+					}
+				elif 'review' in target_text and 'review' in to_path:
+					return {
+						'description': 'Click navigation button',
+						'type': 'click', 
+						'target_text': step.get('target_text') or step.get('targetText'),
+						'url': from_url
+					}
+	
+	# If we can't find a specific button, create a generic navigation step
+	if 'contact' in to_path:
+		return {
+			'description': 'Navigate to contact information',
+			'type': 'click',
+			'target_text': 'Next: Contact Information',
+			'url': from_url
+		}
+	elif 'employment' in to_path:
+		return {
+			'description': 'Navigate to employment information',
+			'type': 'click', 
+			'target_text': 'Next: Employment Information',
+			'url': from_url
+		}
+	elif 'review' in to_path:
+		return {
+			'description': 'Navigate to review',
+			'type': 'click',
+			'target_text': 'Next: Review',
+			'url': from_url
+		}
+	
+	return None
+
+
+async def _convert_recording_to_semantic_workflow(recording_data, description, simulate_interactions, auto_fix_navigation=False):
 	"""Convert a recorded workflow to semantic format using target_text fields."""
 	from workflow_use.workflow.semantic_extractor import SemanticExtractor
 	
@@ -239,8 +383,28 @@ async def _convert_recording_to_semantic_workflow(recording_data, description):
 	workflow_name = recording_data.get('name', 'Recorded Workflow')
 	steps = recording_data.get('steps', [])
 	
+	# Ensure steps is a list and not None
+	if steps is None:
+		steps = []
+	
 	if not steps:
 		raise Exception("No steps found in recording")
+
+	# Filter out redundant click events before processing
+	filtered_steps = _filter_redundant_click_events(steps)
+	if filtered_steps is None:
+		filtered_steps = steps
+	typer.echo(f"Filtered {len(steps) - len(filtered_steps)} redundant click events")
+	
+	# Auto-fix missing navigation steps (optional)
+	if auto_fix_navigation:
+		fixed_steps = _fix_missing_navigation_steps(filtered_steps)
+		if len(fixed_steps) > len(filtered_steps):
+			typer.echo(f"🔧 Auto-fixed {len(fixed_steps) - len(filtered_steps)} missing navigation steps")
+	else:
+		fixed_steps = filtered_steps
+		typer.echo("⚠️ Skipping auto-fix navigation steps (disabled)")
+	
 
 	# Initialize semantic extractor
 	semantic_extractor = SemanticExtractor()
@@ -254,7 +418,7 @@ async def _convert_recording_to_semantic_workflow(recording_data, description):
 	semantic_mapping = {}
 	
 	try:
-		for step in steps:
+		for i, step in enumerate(fixed_steps):
 			step_type = step.get('type', '').lower()
 			
 			if step_type == 'navigation':
@@ -272,15 +436,37 @@ async def _convert_recording_to_semantic_workflow(recording_data, description):
 						page = await browser.get_current_page()
 						await page.goto(current_url)
 						await page.wait_for_load_state()
+						# Wait a bit for dynamic content to load
+						await asyncio.sleep(2)
 						semantic_mapping = await semantic_extractor.extract_semantic_mapping(page)
-						typer.echo(f"Extracted {len(semantic_mapping)} semantic elements from {current_url}")
+						if semantic_mapping is None:
+							semantic_mapping = {}
+						typer.echo(f"Extracted {len(semantic_mapping or {})} semantic elements from {current_url}")
 					except Exception as e:
 						typer.echo(f"Warning: Could not extract semantic mapping from {current_url}: {e}")
 						semantic_mapping = {}
 			
 			elif step_type in ['click', 'input', 'select', 'keypress']:
+				# Before processing interactive steps, refresh semantic mapping to catch dynamic changes
+				# This is especially important after form interactions that might show/hide elements
+				if i > 0 and current_url:  # Skip refresh for first step
+					try:
+						page = await browser.get_current_page()
+						# Small delay to let any previous interactions take effect
+						await asyncio.sleep(1)
+						semantic_mapping = await semantic_extractor.extract_semantic_mapping(page)
+						if semantic_mapping is None:
+							semantic_mapping = {}
+						typer.echo(f"Refreshed semantic mapping: {len(semantic_mapping or {})} elements available")
+					except Exception as e:
+						typer.echo(f"Warning: Could not refresh semantic mapping: {e}")
+						semantic_mapping = {}
+				
 				# Interactive step - convert to semantic format
-				semantic_step = await _convert_step_to_semantic(step, semantic_mapping)
+				# Ensure semantic_mapping is not None before passing it
+				if semantic_mapping is None:
+					semantic_mapping = {}
+				semantic_step = await _convert_step_to_semantic(step, semantic_mapping, browser, simulate_interactions)
 				if semantic_step:
 					semantic_steps.append(semantic_step)
 			
@@ -292,6 +478,20 @@ async def _convert_recording_to_semantic_workflow(recording_data, description):
 					'scrollX': step.get('scrollX', 0),
 					'scrollY': step.get('scrollY', 0)
 				})
+				
+				# After scroll, refresh semantic mapping as new elements might be visible
+				if current_url:
+					try:
+						page = await browser.get_current_page()
+						await page.evaluate(f"window.scrollBy({step.get('scrollX', 0)}, {step.get('scrollY', 0)})")
+						await asyncio.sleep(1)  # Wait for scroll to complete
+						semantic_mapping = await semantic_extractor.extract_semantic_mapping(page)
+						if semantic_mapping is None:
+							semantic_mapping = {}
+						typer.echo(f"Refreshed semantic mapping after scroll: {len(semantic_mapping or {})} elements available")
+					except Exception as e:
+						typer.echo(f"Warning: Could not refresh semantic mapping after scroll: {e}")
+						semantic_mapping = {}
 	
 	finally:
 		await browser.close()
@@ -310,7 +510,150 @@ async def _convert_recording_to_semantic_workflow(recording_data, description):
 	return semantic_workflow
 
 
-async def _convert_step_to_semantic(step, semantic_mapping):
+def _filter_redundant_click_events(steps):
+	"""Filter out redundant click events that occur within a short time window."""
+	filtered_steps = []
+	i = 0
+	
+	typer.echo(f"🔍 Filtering {len(steps)} steps to remove redundant clicks...")
+	
+	while i < len(steps):
+		step = steps[i]
+		
+		if step.get('type') == 'click':
+			# Look ahead for potential redundant clicks
+			click_group = [step]
+			j = i + 1
+			
+			# Group clicks that happen within 500ms of each other, but be smarter about it
+			while j < len(steps) and j < i + 5:  # Look at most 5 steps ahead
+				next_step = steps[j]
+				
+				# Don't group clicks if they're on different URLs (page navigation happened)
+				current_url = step.get('url', '')
+				next_url = next_step.get('url', '')
+				if current_url and next_url and current_url != next_url:
+					break
+				
+				# Check if this is a duplicate click on the same target
+				step_text = str(step.get('target_text') or step.get('targetText') or '').strip()
+				next_text = str(next_step.get('target_text') or next_step.get('targetText') or '').strip()
+				
+				# If they have the same target_text, they're likely duplicates
+				if (next_step.get('type') == 'click' and 
+				    step_text and next_text and step_text == next_text and
+				    abs(next_step.get('timestamp', 0) - step.get('timestamp', 0)) <= 2000):  # Increased to 2 seconds
+					click_group.append(next_step)
+					j += 1
+					continue
+				
+				# Don't group clicks if one is a navigation button (different target_text)
+				navigation_keywords = ['next', 'submit', 'continue', 'proceed', 'save', 'finish', 'confirm', 'back', 'previous']
+				if (any(keyword in step_text.lower() for keyword in navigation_keywords) or 
+				    any(keyword in next_text.lower() for keyword in navigation_keywords)):
+					if step_text != next_text:  # Different navigation buttons
+						break
+				
+				# Don't group radio buttons - each radio button selection is meaningful
+				step_css = str(step.get('cssSelector') or '')
+				next_css = str(next_step.get('cssSelector') or '')
+				if ('role="radio"' in step_css and 'role="radio"' in next_css):
+					# Radio buttons are always meaningful choices - don't group them
+					step_text_display = step.get('target_text') or step.get('targetText') or step.get('elementText') or 'radio button'
+					next_text_display = next_step.get('target_text') or next_step.get('targetText') or next_step.get('elementText') or 'radio button'
+					typer.echo(f"Not grouping radio button selections: '{step_text_display}' vs '{next_text_display}'")
+					break
+				
+				if (next_step.get('type') == 'click' and 
+				    abs(next_step.get('timestamp', 0) - step.get('timestamp', 0)) <= 500):
+					click_group.append(next_step)
+					j += 1
+				else:
+					break
+			
+			if len(click_group) > 1:
+				# Multiple clicks in rapid succession - pick the best one
+				best_click = _select_best_click_from_group(click_group)
+				filtered_steps.append(best_click)
+				typer.echo(f"Filtered {len(click_group)-1} redundant clicks, kept: {best_click.get('target_text', best_click.get('targetText', best_click.get('elementText', 'unknown')))}")
+			else:
+				# Single click - keep as is
+				filtered_steps.append(step)
+			
+			# Skip the steps we've already processed
+			i = j
+		else:
+			# Non-click step - keep as is
+			filtered_steps.append(step)
+			i += 1
+	
+	return filtered_steps
+
+
+def _select_best_click_from_group(click_group):
+	"""Select the best click event from a group of rapid clicks."""
+	# Priority order:
+	# 1. Navigation/flow control buttons (Next, Submit, Continue, etc.)
+	# 2. Form selections with meaningful text (radio buttons, checkboxes)
+	# 3. Click with meaningful target_text
+	# 4. Click with meaningful elementText 
+	# 5. Click with semantic info
+	# 6. Click with shortest CSS selector
+	
+	# First priority: Navigation/flow control buttons
+	navigation_keywords = ['next', 'submit', 'continue', 'proceed', 'save', 'finish', 'confirm', 'back', 'previous']
+	for click in click_group:
+		target_text = str(click.get('target_text') or click.get('targetText') or '').lower()
+		element_text = str(click.get('elementText') or '').lower()
+		try:
+			if any(keyword in target_text or keyword in element_text for keyword in navigation_keywords):
+				typer.echo(f"Prioritizing navigation button: '{click.get('target_text') or click.get('targetText') or click.get('elementText', 'unknown')}'")
+				return click
+		except Exception as e:
+			typer.echo(f"DEBUG: Error in navigation check: {e}, target_text={target_text}, element_text={element_text}")
+			continue
+	
+	# Second priority: Form selections (radio buttons, checkboxes) that change state
+	for click in click_group:
+		try:
+			css_selector = str(click.get('cssSelector') or '')
+			if ('radio' in css_selector or 'checkbox' in css_selector or 
+			    'role="radio"' in css_selector or 'type="checkbox"' in css_selector):
+				target_text = click.get('target_text') or click.get('targetText') or click.get('elementText')
+				if target_text and len(str(target_text).strip()) > 1:
+					typer.echo(f"Prioritizing form selection: '{target_text}'")
+					return click
+		except Exception as e:
+			typer.echo(f"DEBUG: Error in form selection check: {e}")
+			continue
+	
+	# Third priority: Click with meaningful target_text
+	for click in click_group:
+		target_text = (click.get('target_text') or click.get('targetText') or '').strip()
+		if target_text and len(target_text) > 1 and not target_text.isdigit():
+			return click
+	
+	# Fourth priority: Click with meaningful elementText
+	for click in click_group:
+		element_text = (click.get('elementText') or '').strip()
+		if element_text and len(element_text) > 1 and not element_text.isdigit():
+			return click
+	
+	# Fifth priority: Click with semantic info
+	for click in click_group:
+		semantic_info = click.get('semanticInfo', {})
+		if semantic_info:
+			for field in ['labelText', 'ariaLabel', 'name', 'id']:
+				value = semantic_info.get(field, '').strip()
+				if value and len(value) > 1:
+					return click
+	
+	# Last resort - pick the one with shortest CSS selector (usually more specific)
+	click_group.sort(key=lambda x: len(x.get('cssSelector') or ''))
+	return click_group[0]
+
+
+async def _convert_step_to_semantic(step, semantic_mapping, browser, simulate_interactions):
 	"""Convert a single recorded step to semantic format."""
 	step_type = step.get('type', '').lower()
 	description = step.get('description', '')
@@ -318,30 +661,91 @@ async def _convert_step_to_semantic(step, semantic_mapping):
 	# Try to find the best semantic target_text for this step
 	target_text = None
 	
-	# Look for element text or other identifiers
-	element_text = step.get('elementText', '').strip()
+	# Look for element text or other identifiers from the recording
+	element_text_raw = step.get('elementText')
+	element_text = element_text_raw.strip() if element_text_raw else ''
 	css_selector = step.get('cssSelector', '')
 	xpath = step.get('xpath', '')
 	
-	if element_text:
+	# Also check for semantic info from the updated extension
+	semantic_info = step.get('semanticInfo', {})
+	# Check for existing target_text field (primary) or targetText field (fallback)
+	target_text_raw = step.get('target_text') or step.get('targetText')
+	existing_target_text = target_text_raw.strip() if target_text_raw else ''
+	
+	# Priority order for finding target_text:
+	# 1. Existing target_text from recording (if available)
+	# 2. Best semantic match from our current mapping
+	# 3. Extract from semantic info
+	# 4. Use element text
+	# 5. Extract from CSS selector
+	
+	if existing_target_text:
+		target_text = existing_target_text
+		typer.echo(f"Using existing target_text from recording: '{target_text}'")
+	elif element_text:
 		# Try to find this text in our semantic mapping
 		target_text = _find_best_semantic_match(element_text, semantic_mapping)
+		if target_text:
+			typer.echo(f"Found semantic match for '{element_text}' -> '{target_text}'")
+		else:
+			target_text = element_text
+			typer.echo(f"Using original element text: '{target_text}'")
+	elif semantic_info:
+		# Extract from semantic info if available
+		potential_texts = [
+			semantic_info.get('labelText', ''),
+			semantic_info.get('placeholder', ''),
+			semantic_info.get('ariaLabel', ''),
+			semantic_info.get('textContent', ''),
+			semantic_info.get('name', ''),
+			semantic_info.get('id', '')
+		]
+		
+		for text in potential_texts:
+			if text.strip():
+				target_text = _find_best_semantic_match(text.strip(), semantic_mapping)
+				if target_text:
+					typer.echo(f"Found semantic match from semanticInfo: '{text}' -> '{target_text}'")
+					break
+		
+		# If no semantic match found, use the first meaningful text
+		if not target_text:
+			for text in potential_texts:
+				if text.strip() and len(text.strip()) > 1:
+					target_text = text.strip()
+					typer.echo(f"Using text from semanticInfo: '{target_text}'")
+					break
 	
 	# If no good semantic match, try to extract from CSS selector
 	if not target_text and css_selector:
 		target_text = _extract_target_from_selector(css_selector)
+		if target_text:
+			typer.echo(f"Extracted target from CSS selector: '{target_text}'")
 	
 	# Build the semantic step
-	semantic_step = {
-		'description': description or f'{step_type.title()} element',
-		'type': step_type
-	}
+	# Handle button events specifically
+	if step_type == 'button':
+		semantic_step = {
+			'description': description or f"Click button '{target_text}'",
+			'type': 'button',
+			'button_text': step.get('button_text', target_text),
+			'button_type': step.get('button_type', 'button')
+		}
+	else:
+		semantic_step = {
+			'description': description or f'{step_type.title()} element',
+			'type': step_type
+		}
 	
 	if target_text:
 		semantic_step['target_text'] = target_text
 	elif css_selector:
 		# Fallback to original CSS selector if no semantic mapping available
 		semantic_step['cssSelector'] = css_selector
+		typer.echo(f"Warning: No semantic target found, using CSS selector fallback")
+	else:
+		typer.echo(f"Warning: No target method available for step, may need manual adjustment")
 	
 	# Add step-specific fields
 	if step_type == 'input' and 'value' in step:
@@ -351,7 +755,47 @@ async def _convert_step_to_semantic(step, semantic_mapping):
 	elif step_type == 'keypress' and 'key' in step:
 		semantic_step['key'] = step['key']
 	
+	# Optionally simulate the interaction to keep the page state accurate for subsequent steps
+	if simulate_interactions and browser:
+		try:
+			await _simulate_step_interaction(step, browser)
+		except Exception as e:
+			typer.echo(f"Warning: Could not simulate interaction for step: {e}")
+	
 	return semantic_step
+
+
+async def _simulate_step_interaction(step, browser):
+	"""Simulate the interaction to keep page state accurate (optional)."""
+	step_type = step.get('type', '').lower()
+	css_selector = step.get('cssSelector', '')
+	
+	if not css_selector:
+		return
+	
+	try:
+		page = await browser.get_current_page()
+		
+		if step_type == 'click':
+			await page.click(css_selector, timeout=2000)
+		elif step_type == 'input':
+			value = step.get('value', '')
+			await page.fill(css_selector, value, timeout=2000)
+		elif step_type == 'select':
+			selected_text = step.get('selectedText', '')
+			if selected_text:
+				await page.select_option(css_selector, label=selected_text, timeout=2000)
+		elif step_type == 'keypress':
+			key = step.get('key', '')
+			if key:
+				await page.press(css_selector, key, timeout=2000)
+		
+		# Small delay to let the interaction take effect
+		await asyncio.sleep(0.5)
+		
+	except Exception:
+		# Silently ignore simulation errors - this is just for page state accuracy
+		pass
 
 
 def _find_best_semantic_match(element_text, semantic_mapping):
@@ -512,7 +956,7 @@ def create_workflow_no_ai():
 			temp_recording_path = Path(tmp_file.name)
 
 		# Use the semantic workflow builder instead of the regular one
-		saved_path = _build_and_save_semantic_workflow_from_recording(temp_recording_path, default_tmp_dir, is_temp_recording=True)
+		saved_path = _build_and_save_semantic_workflow_from_recording(temp_recording_path, default_tmp_dir, is_temp_recording=True, simulate_interactions=False, auto_fix_navigation=False)
 		if not saved_path:
 			typer.secho(
 				'Failed to complete semantic workflow creation after recording.',
@@ -582,6 +1026,18 @@ def build_semantic_from_recording_command(
 		resolve_path=True,
 		help='Path to the existing recording JSON file.',
 	),
+	simulate_interactions: bool = typer.Option(
+		False,
+		'--simulate-interactions',
+		'-s',
+		help='Simulate recorded interactions during conversion for better semantic mapping accuracy (slower but more accurate)',
+	),
+	auto_fix_navigation: bool = typer.Option(
+		False,
+		'--auto-fix-navigation',
+		'-n',
+		help='Automatically add missing navigation steps based on URL changes (may add unwanted back/forward navigation)',
+	),
 ):
 	"""
 	Takes a path to a recording JSON file and builds a semantic workflow using target_text fields
@@ -594,9 +1050,13 @@ def build_semantic_from_recording_command(
 			bold=True,
 		)
 	)
+	
+	if simulate_interactions:
+		typer.echo(typer.style('⚙️ Interaction simulation enabled - this will be slower but more accurate', fg=typer.colors.YELLOW))
+	
 	typer.echo()  # Add space
 
-	saved_path = _build_and_save_semantic_workflow_from_recording(recording_path, default_save_dir, is_temp_recording=False)
+	saved_path = _build_and_save_semantic_workflow_from_recording(recording_path, default_save_dir, is_temp_recording=False, simulate_interactions=simulate_interactions, auto_fix_navigation=auto_fix_navigation)
 	if not saved_path:
 		typer.secho(f'Failed to build semantic workflow from {recording_path.name}.', fg=typer.colors.RED)
 		raise typer.Exit(code=1)
@@ -936,6 +1396,8 @@ def generate_semantic_mapping_command(
 
 			# Generate semantic mapping
 			mapping = await extractor.extract_semantic_mapping(page)
+			if mapping is None:
+				mapping = {}
 
 			typer.secho(f'Found {len(mapping)} interactive elements', fg=typer.colors.GREEN, bold=True)
 			typer.echo()
@@ -1029,6 +1491,8 @@ def create_semantic_workflow_command(
 
 			# Generate semantic mapping
 			mapping = await extractor.extract_semantic_mapping(page)
+			if mapping is None:
+				mapping = {}
 
 			typer.secho(f'Found {len(mapping)} interactive elements', fg=typer.colors.GREEN, bold=True)
 			typer.echo()

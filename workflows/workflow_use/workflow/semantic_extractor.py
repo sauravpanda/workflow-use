@@ -336,89 +336,104 @@ class SemanticExtractor:
         return mapping
     
     def find_element_by_text(self, mapping: Dict[str, Dict], target_text: str) -> Optional[Dict]:
-        """Find element in mapping by text with fuzzy matching."""
-        target_normalized = self._normalize_text(target_text)
+        """Find element by text with intelligent fuzzy matching and contextual understanding."""
+        if not target_text or not mapping:
+            return None
         
-        # Exact match first
-        if target_normalized in mapping:
-            return mapping[target_normalized]
+        target_lower = target_text.lower().strip()
         
-        # Case-insensitive exact match
-        target_lower = target_normalized.lower()
+        # Strategy 1: Exact match (case-insensitive)
         for text, element_info in mapping.items():
             if text.lower() == target_lower:
+                logger.debug(f"Exact match found: '{target_text}' -> '{text}'")
                 return element_info
         
-        # Partial match - but be more restrictive
+        # Strategy 2: Check if target looks like an element ID or name attribute
+        # and try to find elements with matching ID/name in their selectors
+        if target_text.replace('_', '').replace('-', '').isalnum():
+            for text, element_info in mapping.items():
+                selectors = element_info.get('selectors', '')
+                # Check if the selector contains the target as an ID or name
+                if f"#{target_text}" in selectors or f'[name="{target_text}"]' in selectors or f'[id="{target_text}"]' in selectors:
+                    logger.debug(f"ID/name match found: '{target_text}' -> '{text}' (selector: {selectors})")
+                    return element_info
+        
+        # Strategy 3: Fuzzy text matching - check if target is contained in element text
         best_match = None
-        best_score = 0
+        best_score = 0.0
         
         for text, element_info in mapping.items():
             text_lower = text.lower()
             
-            # Skip very short text matches (they're often generic like "on", "off", etc.)
-            if len(text.strip()) <= 2:
-                continue
-                
-            # Skip if the text is just a generic placeholder or fallback
-            if text.startswith('[') and text.endswith(']'):
-                continue
+            # Calculate different types of matches
+            scores = []
             
-            # Check for meaningful substring matches
-            score = 0
+            # Substring match (both directions)
             if target_lower in text_lower:
-                # Target is contained in the element text - good match
-                score = len(target_lower) / len(text_lower)
-                if score > 0.3:  # At least 30% of the element text matches
-                    if score > best_score:
-                        best_match = element_info
-                        best_score = score
-            elif text_lower in target_lower:
-                # Element text is contained in target - only good if element text is meaningful
-                if len(text.strip()) >= 4:  # At least 4 characters for meaningful match
-                    score = len(text_lower) / len(target_lower)
-                    if score > 0.4:  # At least 40% of the target matches
+                scores.append(len(target_lower) / len(text_lower))
+            if text_lower in target_lower:
+                scores.append(len(text_lower) / len(target_lower))
+            
+            # Word-based matching
+            target_words = set(target_lower.split())
+            text_words = set(text_lower.split())
+            
+            if target_words and text_words:
+                # Calculate Jaccard similarity (intersection over union)
+                intersection = len(target_words & text_words)
+                union = len(target_words | text_words)
+                if union > 0:
+                    jaccard_score = intersection / union
+                    scores.append(jaccard_score)
+                
+                # Calculate word overlap score
+                overlap_score = intersection / max(len(target_words), len(text_words))
+                scores.append(overlap_score)
+            
+            # Take the best score for this element
+            if scores:
+                element_score = max(scores)
+                if element_score > best_score and element_score > 0.3:  # Minimum threshold
+                    best_match = element_info
+                    best_score = element_score
+                    best_text = text
+        
+        if best_match:
+            logger.debug(f"Fuzzy match found: '{target_text}' -> '{best_text}' (score: {best_score:.2f})")
+            return best_match
+        
+        # Strategy 4: Try partial word matching with common form field patterns
+        # Look for elements where target text might be related to form field labels
+        target_words = target_lower.split()
+        if len(target_words) == 1:  # Single word target
+            word = target_words[0]
+            
+            for text, element_info in mapping.items():
+                text_lower = text.lower()
+                
+                # Check for common patterns like:
+                # "firstName" matching "First Name"
+                # "emailAddress" matching "Email Address" 
+                # "phoneNumber" matching "Phone Number"
+                
+                # Split camelCase or snake_case
+                import re
+                word_parts = re.findall(r'[a-z]+|[A-Z][a-z]*', word)
+                word_parts = [part.lower() for part in word_parts if part]
+                
+                if word_parts:
+                    # Check if all parts of the target word appear in the element text
+                    parts_found = sum(1 for part in word_parts if part in text_lower)
+                    if parts_found >= len(word_parts) * 0.7:  # At least 70% of parts match
+                        score = parts_found / len(word_parts)
                         if score > best_score:
                             best_match = element_info
                             best_score = score
+                            best_text = text
         
         if best_match:
-            # Find the corresponding text key for logging
-            matched_text = ""
-            for text, element_info in mapping.items():
-                if element_info == best_match:
-                    matched_text = text
-                    break
-            logger.info(f"Fuzzy matched '{target_text}' to '{matched_text}' (score: {best_score:.2f})")
+            logger.debug(f"Pattern match found: '{target_text}' -> '{best_text}' (score: {best_score:.2f})")
             return best_match
         
-        # Word-based overlap matching as final fallback
-        target_words = set(target_normalized.lower().split())
-        
-        for text, element_info in mapping.items():
-            # Skip very short text
-            if len(text.strip()) <= 2:
-                continue
-                
-            text_words = set(text.lower().split())
-            overlap = len(target_words.intersection(text_words))
-            
-            # Require at least 2 words to overlap, or 1 word if it's significant
-            if overlap >= 2 or (overlap == 1 and max(len(w) for w in target_words.intersection(text_words)) >= 4):
-                score = overlap / max(len(target_words), len(text_words))
-                
-                if score > best_score and score > 0.4:  # At least 40% word overlap
-                    best_match = element_info
-                    best_score = score
-        
-        if best_match:
-            # Find the corresponding text key for logging
-            matched_text = ""
-            for text, element_info in mapping.items():
-                if element_info == best_match:
-                    matched_text = text
-                    break
-            logger.info(f"Word-based fuzzy matched '{target_text}' to '{matched_text}' (score: {best_score:.2f})")
-            return best_match
-        
+        logger.debug(f"No match found for: '{target_text}'")
         return None 
