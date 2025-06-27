@@ -1,10 +1,12 @@
 import asyncio
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List, Tuple
 from playwright.async_api import Page
 
 from browser_use import Browser
 from browser_use.agent.views import ActionResult
+from langchain_core.language_models.chat_models import BaseChatModel
+from langchain.prompts import PromptTemplate
 from workflow_use.schema.views import (
     ClickStep,
     InputStep,
@@ -13,6 +15,7 @@ from workflow_use.schema.views import (
     ScrollStep,
     SelectChangeStep,
     WorkflowStep,
+    ExtractStep,
 )
 from workflow_use.workflow.semantic_extractor import SemanticExtractor
 
@@ -20,9 +23,9 @@ logger = logging.getLogger(__name__)
 
 
 class SemanticWorkflowExecutor:
-    """Executes workflow steps using semantic mappings without AI/LLM involvement."""
+    """Executes workflow steps using semantic mappings with optional AI extraction."""
     
-    def __init__(self, browser: Browser, max_retries: int = 3, max_global_failures: int = 5, max_verification_failures: int = 3):
+    def __init__(self, browser: Browser, max_retries: int = 3, max_global_failures: int = 5, max_verification_failures: int = 3, page_extraction_llm: BaseChatModel | None = None):
         self.browser = browser
         self.semantic_extractor = SemanticExtractor()
         self.current_mapping: Dict[str, Dict] = {}
@@ -33,6 +36,7 @@ class SemanticWorkflowExecutor:
         self.consecutive_failures = 0
         self.consecutive_verification_failures = 0
         self.last_successful_step = None
+        self.page_extraction_llm = page_extraction_llm
     
     async def _refresh_semantic_mapping(self) -> None:
         """Refresh the semantic mapping for the current page."""
@@ -47,25 +51,85 @@ class SemanticWorkflowExecutor:
                 logger.debug(f"'{text}' -> {element_info['selectors']} (fallback: {element_info.get('fallback_selector', 'none')})")
             logger.debug("=== End Semantic Mapping ===")
        
-    def _find_element_by_text(self, target_text: str) -> Optional[Dict]:
-        """Find element by visible text using semantic mapping with improved fallback strategies."""
+    def _find_element_by_text(self, target_text: str, context_hints: List[str] = None) -> Optional[Dict]:
+        """Find element by visible text using semantic mapping with improved hierarchical fallback strategies."""
         if not target_text:
             return None
         
-        # Try the semantic extractor's find method first
+        # Try the semantic extractor's hierarchical find method first if context is provided
+        element_info = None
+        if context_hints:
+            element_info = self.semantic_extractor.find_element_by_hierarchy(self.current_mapping, target_text, context_hints)
+            if element_info:
+                logger.info(f"Found element using hierarchical context: '{target_text}' with context {context_hints}")
+                return element_info
+        
+        # Try the semantic extractor's regular find method
         element_info = self.semantic_extractor.find_element_by_text(self.current_mapping, target_text)
         if element_info:
             return element_info
         
-        # Enhanced fallback strategies
+        # Enhanced fallback strategies for repeated elements
         target_lower = target_text.lower()
         
-        # Try partial matches with different strategies
+        # Strategy 1: Try to find by hierarchical selector (if available and more specific)
+        best_hierarchical_match = None
+        best_hierarchical_score = 0
+        
         for text, element_info in self.current_mapping.items():
             text_lower = text.lower()
+            original_text = element_info.get('original_text', '').lower()
+            
+            # Check if target matches either the full text or original text
+            text_match_score = 0
+            if target_lower == text_lower or target_lower == original_text:
+                text_match_score = 1.0
+            elif target_lower in text_lower or target_lower in original_text:
+                text_match_score = 0.8
+            elif text_lower in target_lower or original_text in target_lower:
+                text_match_score = 0.6
+            
+            if text_match_score > 0:
+                # For elements with hierarchical selectors, prefer those that provide more context
+                hierarchical_selector = element_info.get('hierarchical_selector', '')
+                if hierarchical_selector and hierarchical_selector != element_info.get('selectors', ''):
+                    # This element has a more specific hierarchical selector
+                    
+                    # Calculate specificity score based on selector complexity
+                    specificity_score = 0
+                    if '#' in hierarchical_selector:
+                        specificity_score += 1.0  # ID selectors are most specific
+                    if ':nth-of-type' in hierarchical_selector:
+                        specificity_score += 0.8  # Position-based selectors are very specific
+                    if '>' in hierarchical_selector:
+                        specificity_score += 0.6  # Parent-child relationships are specific
+                    if '.' in hierarchical_selector:
+                        specificity_score += 0.4  # Class selectors add some specificity
+                    
+                    # Combine text match and specificity scores
+                    combined_score = text_match_score * 0.7 + specificity_score * 0.3
+                    
+                    if combined_score > best_hierarchical_score:
+                        best_hierarchical_match = element_info
+                        best_hierarchical_score = combined_score
+        
+        if best_hierarchical_match:
+            # Find the corresponding text key for logging
+            matched_text = ""
+            for text, element_info in self.current_mapping.items():
+                if element_info == best_hierarchical_match:
+                    matched_text = text
+                    break
+            logger.info(f"Found element by hierarchical selector: '{target_text}' -> '{matched_text}' (score: {best_hierarchical_score:.2f})")
+            return best_hierarchical_match
+        
+        # Strategy 2: Try partial matches with different strategies (original fallback)
+        for text, element_info in self.current_mapping.items():
+            text_lower = text.lower()
+            original_text = element_info.get('original_text', '').lower()
             
             # Check if target text is contained in element text (more lenient)
-            if target_lower in text_lower or text_lower in target_lower:
+            if target_lower in text_lower or text_lower in target_lower or (original_text and (target_lower in original_text or original_text in target_lower)):
                 # For radio buttons and checkboxes, be more specific
                 if element_info.get('element_type') in ['radio', 'checkbox']:
                     # Check if the target text matches the value or is close to the label
@@ -78,22 +142,24 @@ class SemanticWorkflowExecutor:
                 logger.info(f"Found element by partial text match: '{target_text}' -> '{text}'")
                 return element_info
         
-        # Strategy 3: Try to find by checking common form patterns
-        # Look for elements that might be related to the target text
+        # Strategy 3: Try to find by checking common form patterns (original fallback)
         target_words = target_text.lower().split()
         best_match = None
         best_score = 0
         
         for text, element_info in self.current_mapping.items():
             text_words = text.lower().split()
+            original_words = element_info.get('original_text', '').lower().split()
             
-            # Calculate word overlap score
-            overlap = len(set(target_words) & set(text_words))
-            if overlap > 0:
-                score = overlap / max(len(target_words), len(text_words))
-                if score > best_score and score > 0.3:  # At least 30% overlap
-                    best_match = element_info
-                    best_score = score
+            # Calculate word overlap score for both full text and original text
+            for word_set in [text_words, original_words]:
+                if word_set:
+                    overlap = len(set(target_words) & set(word_set))
+                    if overlap > 0:
+                        score = overlap / max(len(target_words), len(word_set))
+                        if score > best_score and score > 0.3:  # At least 30% overlap
+                            best_match = element_info
+                            best_score = score
         
         if best_match:
             # Find the corresponding text key for logging
@@ -235,22 +301,37 @@ class SemanticWorkflowExecutor:
             logger.error(f"Error handling strict mode violation: {e}")
             return None
     
-    async def _wait_for_element(self, selector: str, timeout_ms: int = 5000) -> bool:
-        """Wait for element to be available."""
-        try:
-            page = await self.browser.get_current_page()
-            await page.wait_for_selector(selector, timeout=timeout_ms, state="visible")
-            
-            # Check if the selector would cause strict mode violations
-            elements = await page.query_selector_all(selector)
-            if len(elements) > 1:
-                logger.warning(f"Selector {selector} matches {len(elements)} elements during wait")
-                return True  # Element exists, but we'll handle the strict mode later
-            
-            return True
-        except Exception as e:
-            logger.warning(f"Element not found with selector {selector}: {e}")
-            return False
+    async def _wait_for_element(self, selector: str, timeout_ms: int = 5000, fallback_selectors: List[str] = None) -> Tuple[bool, str]:
+        """Wait for element to be available, with hierarchical fallback options.
+        
+        Returns:
+            Tuple of (success, actual_selector_used)
+        """
+        selectors_to_try = [selector]
+        if fallback_selectors:
+            selectors_to_try.extend(fallback_selectors)
+        
+        for sel in selectors_to_try:
+            try:
+                page = await self.browser.get_current_page()
+                await page.wait_for_selector(sel, timeout=timeout_ms, state="visible")
+                
+                # Check if the selector would cause strict mode violations
+                elements = await page.query_selector_all(sel)
+                if len(elements) > 1:
+                    logger.warning(f"Selector {sel} matches {len(elements)} elements during wait")
+                    # Try to make it more specific if it's the hierarchical selector
+                    if sel != selector and ':nth-of-type' in sel:
+                        return True, sel  # Hierarchical selectors with nth-of-type are usually fine
+                    return True, sel  # Element exists, but we'll handle the strict mode later
+                
+                return True, sel
+            except Exception as e:
+                logger.debug(f"Element not found with selector {sel}: {e}")
+                continue
+        
+        logger.warning(f"Element not found with any selector: {selectors_to_try}")
+        return False, selector
     
     async def execute_navigation_step(self, step: NavigationStep) -> ActionResult:
         """Execute navigation step."""
@@ -365,28 +446,34 @@ class SemanticWorkflowExecutor:
                 logger.error(error_msg)
                 raise Exception(error_msg)
         
-        # Wait for element and click using improved strategies
-        if not await self._wait_for_element(selector_to_use):
-            # Try fallback selector if available
-            if element_info and 'fallback_selector' in element_info:
-                fallback_selector = element_info['fallback_selector']
-                logger.info(f"Main selector failed, trying fallback: {fallback_selector}")
-                if await self._wait_for_element(fallback_selector):
-                    selector_to_use = fallback_selector
-                elif element_info.get('text_xpath'):
-                    # Try XPath as final fallback
-                    xpath_selector = element_info['text_xpath']
-                    logger.info(f"CSS fallback failed, trying XPath: {xpath_selector}")
-                    try:
-                        page = await self.browser.get_current_page()
-                        await page.wait_for_selector(f"xpath={xpath_selector}", timeout=2000)
-                        selector_to_use = f"xpath={xpath_selector}"
-                    except:
-                        raise Exception(f"Element not found with any selector. Main: {selector_to_use}, Fallback: {fallback_selector}, XPath: {xpath_selector}")
-                else:
-                    raise Exception(f"Element not found with main selector: {selector_to_use} or fallback: {fallback_selector}")
-            else:
-                raise Exception(f"Element not found: {selector_to_use}")
+        # Wait for element using hierarchical fallback strategies
+        fallback_selectors = []
+        if element_info:
+            # Add hierarchical selector as first fallback
+            hierarchical_selector = element_info.get('hierarchical_selector')
+            if hierarchical_selector and hierarchical_selector != selector_to_use:
+                fallback_selectors.append(hierarchical_selector)
+            
+            # Add original fallback selector
+            fallback_selector = element_info.get('fallback_selector')
+            if fallback_selector and fallback_selector not in fallback_selectors:
+                fallback_selectors.append(fallback_selector)
+            
+            # Add XPath selector as final fallback
+            xpath_selector = element_info.get('text_xpath')
+            if xpath_selector:
+                fallback_selectors.append(f"xpath={xpath_selector}")
+        
+        success, actual_selector = await self._wait_for_element(selector_to_use, fallback_selectors=fallback_selectors)
+        if not success:
+            available_texts = list(self.current_mapping.keys())[:10]
+            error_msg = f"Element not found with any selector for: '{target_identifier or step.description}'"
+            error_msg += f"\nTried selectors: {[selector_to_use] + fallback_selectors}"
+            error_msg += f"\nAvailable elements on page: {available_texts}"
+            raise Exception(error_msg)
+        
+        # Use the selector that actually worked
+        selector_to_use = actual_selector
         
         # Execute click with verification and retry
         async def click_executor():
@@ -618,28 +705,34 @@ class SemanticWorkflowExecutor:
                 logger.error(error_msg)
                 raise Exception(error_msg)
         
-        # Wait for element and input text - try fallbacks if main selector fails
-        if not await self._wait_for_element(selector_to_use):
-            # Try fallback selector if available
-            if element_info and 'fallback_selector' in element_info:
-                fallback_selector = element_info['fallback_selector']
-                logger.info(f"Main selector failed, trying fallback: {fallback_selector}")
-                if await self._wait_for_element(fallback_selector):
-                    selector_to_use = fallback_selector
-                elif element_info.get('text_xpath'):
-                    # Try XPath as final fallback
-                    xpath_selector = element_info['text_xpath']
-                    logger.info(f"CSS fallback failed, trying XPath: {xpath_selector}")
-                    try:
-                        page = await self.browser.get_current_page()
-                        await page.wait_for_selector(f"xpath={xpath_selector}", timeout=2000)
-                        selector_to_use = f"xpath={xpath_selector}"
-                    except:
-                        raise Exception(f"Element not found with any selector. Main: {selector_to_use}, Fallback: {fallback_selector}, XPath: {xpath_selector}")
-                else:
-                    raise Exception(f"Element not found with main selector: {selector_to_use} or fallback: {fallback_selector}")
-            else:
-                raise Exception(f"Element not found: {selector_to_use}")
+        # Wait for element using hierarchical fallback strategies
+        fallback_selectors = []
+        if element_info:
+            # Add hierarchical selector as first fallback
+            hierarchical_selector = element_info.get('hierarchical_selector')
+            if hierarchical_selector and hierarchical_selector != selector_to_use:
+                fallback_selectors.append(hierarchical_selector)
+            
+            # Add original fallback selector
+            fallback_selector = element_info.get('fallback_selector')
+            if fallback_selector and fallback_selector not in fallback_selectors:
+                fallback_selectors.append(fallback_selector)
+            
+            # Add XPath selector as final fallback
+            xpath_selector = element_info.get('text_xpath')
+            if xpath_selector:
+                fallback_selectors.append(f"xpath={xpath_selector}")
+        
+        success, actual_selector = await self._wait_for_element(selector_to_use, fallback_selectors=fallback_selectors)
+        if not success:
+            available_texts = list(self.current_mapping.keys())[:10]
+            error_msg = f"Element not found with any selector for input: '{target_identifier or step.description}'"
+            error_msg += f"\nTried selectors: {[selector_to_use] + fallback_selectors}"
+            error_msg += f"\nAvailable elements on page: {available_texts}"
+            raise Exception(error_msg)
+        
+        # Use the selector that actually worked
+        selector_to_use = actual_selector
         
         locator = page.locator(selector_to_use)
         
@@ -814,9 +907,34 @@ class SemanticWorkflowExecutor:
             logger.error(error_msg)
             raise Exception(error_msg)
         
-        # Wait for element and select option
-        if not await self._wait_for_element(selector_to_use):
-            raise Exception(f"Element not found: {selector_to_use}")
+        # Wait for element using hierarchical fallback strategies
+        fallback_selectors = []
+        if element_info:
+            # Add hierarchical selector as first fallback
+            hierarchical_selector = element_info.get('hierarchical_selector')
+            if hierarchical_selector and hierarchical_selector != selector_to_use:
+                fallback_selectors.append(hierarchical_selector)
+            
+            # Add original fallback selector
+            fallback_selector = element_info.get('fallback_selector')
+            if fallback_selector and fallback_selector not in fallback_selectors:
+                fallback_selectors.append(fallback_selector)
+            
+            # Add XPath selector as final fallback
+            xpath_selector = element_info.get('text_xpath')
+            if xpath_selector:
+                fallback_selectors.append(f"xpath={xpath_selector}")
+        
+        success, actual_selector = await self._wait_for_element(selector_to_use, fallback_selectors=fallback_selectors)
+        if not success:
+            available_texts = list(self.current_mapping.keys())[:10]
+            error_msg = f"Element not found with any selector for select: '{target_identifier or step.description}'"
+            error_msg += f"\nTried selectors: {[selector_to_use] + fallback_selectors}"
+            error_msg += f"\nAvailable elements on page: {available_texts}"
+            raise Exception(error_msg)
+        
+        # Use the selector that actually worked
+        selector_to_use = actual_selector
         
         # Execute select with verification and retry
         async def select_executor():
@@ -865,9 +983,34 @@ class SemanticWorkflowExecutor:
             logger.error(error_msg)
             raise Exception(error_msg)
         
-        # Wait for element and press key
-        if not await self._wait_for_element(selector_to_use):
-            raise Exception(f"Element not found: {selector_to_use}")
+        # Wait for element using hierarchical fallback strategies
+        fallback_selectors = []
+        if element_info:
+            # Add hierarchical selector as first fallback
+            hierarchical_selector = element_info.get('hierarchical_selector')
+            if hierarchical_selector and hierarchical_selector != selector_to_use:
+                fallback_selectors.append(hierarchical_selector)
+            
+            # Add original fallback selector
+            fallback_selector = element_info.get('fallback_selector')
+            if fallback_selector and fallback_selector not in fallback_selectors:
+                fallback_selectors.append(fallback_selector)
+            
+            # Add XPath selector as final fallback
+            xpath_selector = element_info.get('text_xpath')
+            if xpath_selector:
+                fallback_selectors.append(f"xpath={xpath_selector}")
+        
+        success, actual_selector = await self._wait_for_element(selector_to_use, fallback_selectors=fallback_selectors)
+        if not success:
+            available_texts = list(self.current_mapping.keys())[:10]
+            error_msg = f"Element not found with any selector for key press: '{target_identifier or step.description}'"
+            error_msg += f"\nTried selectors: {[selector_to_use] + fallback_selectors}"
+            error_msg += f"\nAvailable elements on page: {available_texts}"
+            raise Exception(error_msg)
+        
+        # Use the selector that actually worked
+        selector_to_use = actual_selector
         
         # Execute key press with verification and retry
         async def keypress_executor():
@@ -944,6 +1087,8 @@ class SemanticWorkflowExecutor:
             return await self.execute_scroll_step(step)
         elif step.type == 'button':
             return await self.execute_button_step(step)
+        elif isinstance(step, ExtractStep):
+            return await self.execute_extract_step(step)
         else:
             raise Exception(f"Unsupported step type: {step.type}")
     
@@ -1491,4 +1636,661 @@ class SemanticWorkflowExecutor:
             return matches
         except Exception as e:
             logger.warning(f"Navigation verification failed: {e}")
-            return False 
+            return False
+
+    async def execute_extract_step(self, step: ExtractStep) -> ActionResult:
+        """Execute AI extraction step using LLM for intelligent content extraction."""
+        page = await self.browser.get_current_page()
+        
+        try:
+            if not self.page_extraction_llm:
+                # Fallback to basic extraction if no LLM is available
+                logger.warning("No page_extraction_llm provided - using basic content extraction")
+                page_text = await page.evaluate('() => document.body.innerText')
+                extracted_data = {
+                    "extraction_goal": step.extractionGoal,
+                    "page_url": page.url,
+                    "page_title": await page.title(),
+                    "page_text_preview": page_text[:1000] + "..." if len(page_text) > 1000 else page_text,
+                    "note": "Basic extraction - no LLM available for intelligent extraction"
+                }
+                
+                msg = f"🤖 Basic extraction: {step.extractionGoal}"
+                logger.info(msg)
+                return ActionResult(
+                    extracted_content=msg,
+                    include_in_memory=True,
+                    extracted_data=extracted_data
+                )
+            
+            # AI-powered extraction using LLM
+            import markdownify
+            
+            logger.info(f"🤖 Starting AI extraction: {step.extractionGoal}")
+            
+            # Convert page HTML to clean markdown, removing unnecessary elements
+            strip_tags = ['a', 'img', 'script', 'style', 'nav', 'header', 'footer']
+            html_content = await page.content()
+            markdown_content = markdownify.markdownify(html_content, strip=strip_tags)
+            
+            # Include iframe content for comprehensive extraction
+            for iframe in page.frames:
+                if iframe.url != page.url and not iframe.url.startswith('data:'):
+                    try:
+                        iframe_content = await iframe.content()
+                        iframe_markdown = markdownify.markdownify(iframe_content, strip=strip_tags)
+                        markdown_content += f'\n\n=== IFRAME {iframe.url} ===\n{iframe_markdown}\n'
+                    except Exception as e:
+                        logger.debug(f"Could not extract iframe content from {iframe.url}: {e}")
+            
+            # Limit content size to avoid token limits (keep most relevant content)
+            max_content_length = 50000  # Adjust based on your LLM's context window
+            if len(markdown_content) > max_content_length:
+                # Try to keep the beginning and end, which often contain the most relevant info
+                content_start = markdown_content[:max_content_length // 2]
+                content_end = markdown_content[-(max_content_length // 2):]
+                markdown_content = content_start + "\n\n... [CONTENT TRUNCATED] ...\n\n" + content_end
+                logger.info(f"Content truncated to {max_content_length} characters for LLM processing")
+            
+            # Create extraction prompt
+            extraction_prompt = """You are an expert at extracting structured information from web pages.
+
+Your task is to analyze the provided page content and extract information based on the specific goal.
+
+EXTRACTION GOAL: {goal}
+
+PAGE URL: {url}
+PAGE TITLE: {title}
+
+PAGE CONTENT:
+{content}
+
+Instructions:
+1. Focus specifically on the extraction goal provided
+2. Extract all relevant information that matches the goal
+3. Structure the information clearly and logically
+4. If the goal asks for specific data formats (JSON, tables, lists), provide that format
+5. If no relevant information is found, clearly state that
+6. Be comprehensive but concise
+7. Include any relevant context or metadata that would be useful
+
+EXTRACTED INFORMATION:"""
+
+            # Format the prompt with page data
+            formatted_prompt = extraction_prompt.format(
+                goal=step.extractionGoal,
+                url=page.url,
+                title=await page.title(),
+                content=markdown_content
+            )
+            
+            # Call LLM for extraction
+            logger.info("Sending extraction request to LLM...")
+            try:
+                llm_response = await self.page_extraction_llm.ainvoke(formatted_prompt)
+                extracted_content = llm_response.content if hasattr(llm_response, 'content') else str(llm_response)
+                
+                # Create structured extracted data
+                extracted_data = {
+                    "extraction_goal": step.extractionGoal,
+                    "page_url": page.url,
+                    "page_title": await page.title(),
+                    "extracted_content": extracted_content,
+                    "content_length": len(markdown_content),
+                    "timestamp": asyncio.get_event_loop().time(),
+                    "extraction_method": "AI-powered"
+                }
+                
+                msg = f"🤖 AI Extraction Complete: {step.extractionGoal}\n\nExtracted Information:\n{extracted_content}"
+                logger.info(f"✅ AI extraction successful for goal: {step.extractionGoal}")
+                
+                # Log a summary of what was extracted for visibility
+                content_preview = extracted_content#[:200] + "..." if len(extracted_content) > 200 else extracted_content
+                logger.info(f"📋 Extracted content preview: {content_preview}")
+                
+                return ActionResult(
+                    extracted_content=msg,
+                    include_in_memory=True,
+                    extracted_data=extracted_data
+                )
+                
+            except Exception as llm_error:
+                logger.error(f"LLM extraction failed: {llm_error}")
+                # Fallback to providing raw content if LLM fails
+                fallback_data = {
+                    "extraction_goal": step.extractionGoal,
+                    "page_url": page.url,
+                    "page_title": await page.title(),
+                    "raw_content": markdown_content[:2000] + "..." if len(markdown_content) > 2000 else markdown_content,
+                    "error": f"LLM extraction failed: {str(llm_error)}",
+                    "extraction_method": "fallback"
+                }
+                
+                msg = f"🤖 Extraction Goal: {step.extractionGoal}\n\nLLM extraction failed, providing raw content:\n{fallback_data['raw_content']}"
+                logger.warning(f"⚠️ LLM extraction failed, using fallback for: {step.extractionGoal}")
+                
+                return ActionResult(
+                    extracted_content=msg,
+                    include_in_memory=True,
+                    extracted_data=fallback_data
+                )
+            
+        except Exception as e:
+            logger.error(f"Failed to execute extraction step: {e}")
+            error_data = {
+                "extraction_goal": step.extractionGoal,
+                "page_url": page.url,
+                "error": str(e),
+                "extraction_method": "failed"
+            }
+            
+            return ActionResult(
+                extracted_content=f"❌ Extraction failed: {step.extractionGoal}\nError: {str(e)}",
+                include_in_memory=True,
+                extracted_data=error_data
+            ) 
+
+    async def find_element_with_context(self, target_text: str, context_hints: List[str] = None) -> Optional[Dict]:
+        """Public method to find elements using hierarchical context.
+        
+        This method demonstrates how to use the enhanced hierarchical selection capabilities.
+        
+        Args:
+            target_text: The text of the element to find
+            context_hints: List of context hints to help disambiguate repeated elements
+                          Examples: ['form', 'contact'], ['section', 'billing'], ['table', 'row 2']
+        
+        Returns:
+            Element info dict if found, None otherwise
+            
+        Examples:
+            # Basic usage - finds first "Submit" button
+            element = await executor.find_element_with_context("Submit")
+            
+            # With context - finds "Submit" button specifically in contact form
+            element = await executor.find_element_with_context("Submit", ["contact", "form"])
+            
+            # Table/list context - finds specific item in a list
+            element = await executor.find_element_with_context("Edit", ["item 2 of 5"])
+            
+            # Hierarchical context - finds element in specific container
+            element = await executor.find_element_with_context("First Name", ["billing", "section"])
+        """
+        if not self.current_mapping:
+            await self._refresh_semantic_mapping()
+        
+        if context_hints:
+            return self.semantic_extractor.find_element_by_hierarchy(
+                self.current_mapping, target_text, context_hints
+            )
+        else:
+            return self._find_element_by_text(target_text, context_hints)
+    
+    async def find_element_in_container(self, target_text: str, container_selector: str = None, container_text: str = None) -> Optional[Dict]:
+        """Find an element within a specific container by first locating the container.
+        
+        This is more reliable than complex CSS selectors for nested elements.
+        
+        Args:
+            target_text: The text of the element to find (e.g., "Edit", "Submit")
+            container_selector: CSS selector for the container (e.g., "#user-table tr:nth-of-type(2)")
+            container_text: Text content to identify the container (e.g., "John Doe")
+        
+        Returns:
+            Element info dict with dynamically generated selector
+        """
+        if not self.current_mapping:
+            await self._refresh_semantic_mapping()
+        
+        page = await self.browser.get_current_page()
+        
+        try:
+            # Step 1: Find the container
+            container_element = None
+            
+            if container_selector:
+                # Use provided selector
+                container_elements = await page.query_selector_all(container_selector)
+                if container_elements:
+                    container_element = container_elements[0]
+                    logger.info(f"Found container using selector: {container_selector}")
+            
+            elif container_text:
+                # Find container by text content using XPath
+                xpath_query = f"xpath=//*[contains(text(), '{container_text}')]/ancestor-or-self::tr | //*[contains(text(), '{container_text}')]/ancestor-or-self::section | //*[contains(text(), '{container_text}')]/ancestor-or-self::form"
+                container_element = await page.query_selector(xpath_query)
+                if container_element:
+                    logger.info(f"Found container containing text: {container_text}")
+            
+            if not container_element:
+                logger.warning(f"Could not find container for {target_text}")
+                return None
+            
+            # Step 2: Find the target element within the container
+            target_elements = await container_element.query_selector_all(f"button, input, select, a, [role='button']")
+            
+            for element in target_elements:
+                element_text = await element.text_content()
+                if element_text and target_text.lower() in element_text.lower().strip():
+                    # Generate a dynamic selector for this element
+                    element_id = await element.get_attribute('id')
+                    element_class = await element.get_attribute('class')
+                    element_tag = await element.evaluate('el => el.tagName.toLowerCase()')
+                    
+                    # Build selector
+                    if element_id:
+                        dynamic_selector = f"#{element_id}"
+                    elif element_class:
+                        classes = element_class.split()[0] if element_class.split() else ''
+                        dynamic_selector = f"{element_tag}.{classes}" if classes else element_tag
+                    else:
+                        dynamic_selector = element_tag
+                    
+                    # Make it specific to the container
+                    if container_selector:
+                        final_selector = f"{container_selector} {dynamic_selector}"
+                    else:
+                        # Generate container selector on the fly
+                        container_id = await container_element.get_attribute('id')
+                        container_class = await container_element.get_attribute('class')
+                        container_tag = await container_element.evaluate('el => el.tagName.toLowerCase()')
+                        
+                        if container_id:
+                            container_sel = f"#{container_id}"
+                        elif container_class:
+                            first_class = container_class.split()[0] if container_class.split() else ''
+                            container_sel = f"{container_tag}.{first_class}" if first_class else container_tag
+                        else:
+                            container_sel = container_tag
+                        
+                        final_selector = f"{container_sel} {dynamic_selector}"
+                    
+                    logger.info(f"Found '{target_text}' in container: {final_selector}")
+                    
+                    # Return element info in the same format as semantic mapping
+                    return {
+                        'selectors': final_selector,
+                        'hierarchical_selector': final_selector,
+                        'fallback_selector': dynamic_selector,
+                        'text_xpath': f"//*[contains(text(), '{target_text}')]",
+                        'element_type': 'button',
+                        'original_text': element_text.strip(),
+                        'class': element_class or '',
+                        'id': element_id or ''
+                    }
+            
+            logger.warning(f"Could not find '{target_text}' within the container")
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error in find_element_in_container: {e}")
+            return None
+    
+    async def list_available_elements_with_context(self) -> Dict[str, Dict]:
+        """List all available elements showing their hierarchical context.
+        
+        This helps debug issues with repeated text by showing the context added to each element.
+        
+        Returns:
+            Dictionary mapping display text -> element info, showing how duplicates are resolved
+        """
+        if not self.current_mapping:
+            await self._refresh_semantic_mapping()
+        
+        logger.info("=== Available Elements with Hierarchical Context ===")
+        for text, element_info in self.current_mapping.items():
+            original_text = element_info.get('original_text', text)
+            container_context = element_info.get('container_context', {})
+            sibling_context = element_info.get('sibling_context', {})
+            
+            context_parts = []
+            if container_context:
+                container_type = container_context.get('type', '')
+                container_text = container_context.get('text', '')
+                if container_text:
+                    context_parts.append(f"in {container_text}")
+                elif container_type:
+                    context_parts.append(f"in {container_type}")
+            
+            if sibling_context and sibling_context.get('total', 0) > 1:
+                pos = sibling_context.get('position', 0) + 1
+                total = sibling_context.get('total', 0)
+                context_parts.append(f"item {pos} of {total}")
+            
+            context_desc = ", ".join(context_parts) if context_parts else "no context"
+            logger.info(f"  '{text}' -> {element_info.get('selectors', 'N/A')} ({context_desc})")
+        
+        return self.current_mapping
+
+    async def select_calendar_date(self, date_value: str, calendar_type: str = "departure") -> Optional[Dict]:
+        """Select a date from a calendar widget.
+        
+        Args:
+            date_value: The date to select (format: YYYY-MM-DD, MM/DD/YYYY, or natural language)
+            calendar_type: Type of calendar - "departure", "return", or "general"
+        
+        Returns:
+            Element info if successful, None otherwise
+        """
+        if not self.current_mapping:
+            await self._refresh_semantic_mapping()
+        
+        page = await self.browser.get_current_page()
+        
+        try:
+            # First, try to find calendar elements with the specific date
+            for text, element_info in self.current_mapping.items():
+                container_context = element_info.get('container_context', {})
+                widget_data = element_info.get('widget_data', {})
+                
+                # Check if this is a calendar element
+                if container_context.get('widget_type') == 'calendar':
+                    # Check if date matches
+                    element_date = widget_data.get('date_value') or element_info.get('text_content', '')
+                    
+                    if self._date_matches(date_value, element_date):
+                        # Check if it's the right calendar type
+                        date_type = container_context.get('date_type', 'general')
+                        if calendar_type == "general" or date_type == calendar_type:
+                            logger.info(f"Found calendar date: {date_value} in {calendar_type} calendar")
+                            return element_info
+            
+            # Fallback: Try to find by aria-label or text content
+            date_patterns = self._generate_date_patterns(date_value)
+            for pattern in date_patterns:
+                # Look for elements with matching aria-label or text
+                calendar_element = await page.query_selector(
+                    f'[role="gridcell"][aria-label*="{pattern}"], '
+                    f'[data-date*="{pattern}"], '
+                    f'.calendar-day:has-text("{pattern}"), '
+                    f'.day:has-text("{pattern}")'
+                )
+                
+                if calendar_element:
+                    # Generate dynamic element info
+                    element_id = await calendar_element.get_attribute('id')
+                    element_class = await calendar_element.get_attribute('class')
+                    
+                    selector = f"#{element_id}" if element_id else f".{element_class.split()[0]}" if element_class else "[role='gridcell']"
+                    
+                    return {
+                        'selectors': selector,
+                        'hierarchical_selector': selector,
+                        'fallback_selector': f'[aria-label*="{pattern}"]',
+                        'element_type': 'calendar',
+                        'date_value': date_value,
+                        'calendar_type': calendar_type
+                    }
+            
+            logger.warning(f"Could not find calendar date: {date_value}")
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error selecting calendar date: {e}")
+            return None
+
+    async def select_dropdown_option(self, option_text: str, dropdown_context: str = None) -> Optional[Dict]:
+        """Select an option from a dropdown menu.
+        
+        Args:
+            option_text: The text of the option to select
+            dropdown_context: Context to identify the specific dropdown (e.g., "travelers", "cabin class")
+        
+        Returns:
+            Element info if successful, None otherwise
+        """
+        if not self.current_mapping:
+            await self._refresh_semantic_mapping()
+        
+        page = await self.browser.get_current_page()
+        
+        try:
+            # First, try to find dropdown options in semantic mapping
+            for text, element_info in self.current_mapping.items():
+                container_context = element_info.get('container_context', {})
+                
+                # Check if this is a dropdown element
+                if container_context.get('widget_type') == 'dropdown':
+                    # Check if option text matches
+                    if option_text.lower() in text.lower():
+                        # Check dropdown context if specified
+                        if dropdown_context:
+                            dropdown_purpose = container_context.get('dropdown_purpose', '')
+                            if dropdown_context.lower() not in dropdown_purpose.lower():
+                                continue
+                        
+                        logger.info(f"Found dropdown option: {option_text}")
+                        return element_info
+            
+            # Fallback: Try to find dropdown options directly
+            option_selectors = [
+                f'[role="option"]:has-text("{option_text}")',
+                f'[role="menuitem"]:has-text("{option_text}")',
+                f'.option:has-text("{option_text}")',
+                f'.menu-item:has-text("{option_text}")',
+                f'[data-value*="{option_text.lower()}"]'
+            ]
+            
+            for selector in option_selectors:
+                try:
+                    option_element = await page.query_selector(selector)
+                    if option_element:
+                        return {
+                            'selectors': selector,
+                            'hierarchical_selector': selector,
+                            'fallback_selector': f':has-text("{option_text}")',
+                            'element_type': 'dropdown',
+                            'option_text': option_text,
+                            'dropdown_context': dropdown_context
+                        }
+                except:
+                    continue
+            
+            logger.warning(f"Could not find dropdown option: {option_text}")
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error selecting dropdown option: {e}")
+            return None
+
+    async def select_flight_option(self, criteria: Dict) -> Optional[Dict]:
+        """Select a flight option based on criteria.
+        
+        Args:
+            criteria: Dictionary with flight selection criteria
+                     e.g., {"price_range": "200-300", "airline": "Southwest", "time": "morning"}
+        
+        Returns:
+            Element info if successful, None otherwise
+        """
+        if not self.current_mapping:
+            await self._refresh_semantic_mapping()
+        
+        try:
+            # Find flight/booking elements
+            flight_options = []
+            
+            for text, element_info in self.current_mapping.items():
+                container_context = element_info.get('container_context', {})
+                
+                # Check if this is a booking element
+                if container_context.get('widget_type') == 'booking':
+                    flight_options.append((text, element_info, container_context))
+            
+            # Score flight options based on criteria
+            best_option = None
+            best_score = 0
+            
+            for text, element_info, context in flight_options:
+                score = self._score_flight_option(criteria, context, text)
+                if score > best_score:
+                    best_score = score
+                    best_option = element_info
+            
+            if best_option:
+                logger.info(f"Selected flight option with score: {best_score}")
+                return best_option
+            
+            logger.warning("Could not find suitable flight option")
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error selecting flight option: {e}")
+            return None
+
+    async def handle_dynamic_content_loading(self, trigger_element: Dict, expected_content: str, timeout: int = 10000) -> bool:
+        """Handle dynamic content loading after triggering an action.
+        
+        Args:
+            trigger_element: Element that triggers content loading
+            expected_content: Text or selector that should appear after loading
+            timeout: Maximum time to wait in milliseconds
+        
+        Returns:
+            True if content loaded successfully, False otherwise
+        """
+        page = await self.browser.get_current_page()
+        
+        try:
+            # Click the trigger element
+            selector = trigger_element.get('selectors')
+            if not selector:
+                return False
+            
+            await page.click(selector)
+            logger.info(f"Triggered dynamic content loading with: {selector}")
+            
+            # Wait for expected content to appear
+            try:
+                # Try multiple strategies to detect content loading
+                await page.wait_for_selector(
+                    f':has-text("{expected_content}")', 
+                    timeout=timeout
+                )
+                logger.info(f"Dynamic content loaded: {expected_content}")
+                return True
+                
+            except:
+                # Try waiting for any new content
+                await page.wait_for_load_state('networkidle', timeout=timeout)
+                logger.info("Dynamic content loading completed (networkidle)")
+                return True
+                
+        except Exception as e:
+            logger.error(f"Error handling dynamic content loading: {e}")
+            return False
+
+    def _date_matches(self, target_date: str, element_date: str) -> bool:
+        """Check if two date strings match allowing for different formats."""
+        import re
+        from datetime import datetime
+        
+        try:
+            # Normalize both dates
+            target_normalized = self._normalize_date(target_date)
+            element_normalized = self._normalize_date(element_date)
+            
+            return target_normalized == element_normalized
+        except:
+            # Fallback to string matching
+            return target_date.lower() in element_date.lower() or element_date.lower() in target_date.lower()
+
+    def _normalize_date(self, date_str: str) -> str:
+        """Normalize date string to YYYY-MM-DD format."""
+        import re
+        from datetime import datetime
+        
+        # Remove extra whitespace and common words
+        date_str = re.sub(r'\b(day|date|select)\b', '', date_str.lower()).strip()
+        
+        # Try common date formats
+        formats = [
+            '%Y-%m-%d', '%m/%d/%Y', '%d/%m/%Y', '%m-%d-%Y',
+            '%B %d, %Y', '%b %d, %Y', '%d %B %Y', '%d %b %Y'
+        ]
+        
+        for fmt in formats:
+            try:
+                dt = datetime.strptime(date_str, fmt)
+                return dt.strftime('%Y-%m-%d')
+            except:
+                continue
+        
+        return date_str
+
+    def _generate_date_patterns(self, date_value: str) -> List[str]:
+        """Generate different patterns for finding a date."""
+        patterns = [date_value]
+        
+        try:
+            from datetime import datetime
+            
+            # Try to parse the date and generate alternative formats
+            dt = datetime.strptime(date_value, '%Y-%m-%d')
+            patterns.extend([
+                dt.strftime('%m/%d/%Y'),
+                dt.strftime('%d/%m/%Y'),
+                dt.strftime('%B %d, %Y'),
+                dt.strftime('%b %d, %Y'),
+                dt.strftime('%d %B %Y'),
+                dt.strftime('%d'),  # Just the day
+                dt.strftime('%B'),  # Just the month
+            ])
+        except:
+            pass
+        
+        return patterns
+
+    def _score_flight_option(self, criteria: Dict, context: Dict, text: str) -> int:
+        """Score a flight option based on selection criteria."""
+        score = 0
+        
+        # Price scoring
+        if 'price_range' in criteria:
+            price_range = criteria['price_range']
+            context_price = context.get('price', '')
+            if self._price_in_range(context_price, price_range):
+                score += 3
+        
+        # Airline scoring
+        if 'airline' in criteria:
+            airline = criteria['airline'].lower()
+            context_airline = context.get('airline', '').lower()
+            if airline in context_airline:
+                score += 2
+        
+        # Time preference scoring
+        if 'time' in criteria:
+            time_pref = criteria['time'].lower()
+            context_time = context.get('time_info', '').lower()
+            if time_pref in context_time:
+                score += 2
+        
+        # Selection button priority
+        if 'select' in text.lower():
+            score += 1
+        
+        return score
+
+    def _price_in_range(self, price_str: str, price_range: str) -> bool:
+        """Check if price falls within specified range."""
+        import re
+        
+        try:
+            # Extract numeric price
+            price_match = re.search(r'\$?(\d+)', price_str)
+            if not price_match:
+                return False
+            
+            price = int(price_match.group(1))
+            
+            # Parse range
+            range_parts = price_range.split('-')
+            if len(range_parts) == 2:
+                min_price = int(range_parts[0])
+                max_price = int(range_parts[1])
+                return min_price <= price <= max_price
+        except:
+            pass
+        
+        return False

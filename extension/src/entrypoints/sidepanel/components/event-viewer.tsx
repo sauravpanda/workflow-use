@@ -17,6 +17,67 @@ const getScreenshot = (step: Step): string | undefined => {
   return undefined;
 };
 
+// Helper function to format step details based on type
+const formatStepDetails = (step: any): string => {
+  switch (step.type) {
+    case "navigation":
+      return step.url;
+    case "click":
+      return step.targetText || step.elementText || step.cssSelector || "Click action";
+    case "input":
+      const value = step.value || "";
+      const target = step.targetText || step.cssSelector || "Input field";
+      return `${target}: "${value}"`;
+    case "key_press":
+      return `Key: ${step.key}`;
+    case "scroll":
+      return `(${step.scrollX}, ${step.scrollY})`;
+    case "extract":
+      return step.extractionGoal || "AI Extraction";
+    default:
+      return "Unknown action";
+  }
+};
+
+// Helper function to get step icon based on type
+const getStepIcon = (step: any): string => {
+  switch (step.type) {
+    case "navigation":
+      return "🔗";
+    case "click":
+      return "👆";
+    case "input":
+      return "✏️";
+    case "key_press":
+      return "⌨️";
+    case "scroll":
+      return "📜";
+    case "extract":
+      return "🤖";
+    default:
+      return "❓";
+  }
+};
+
+// Helper function to get background color based on step type
+const getStepBgColor = (step: any, isSelected: boolean): string => {
+  if (isSelected) {
+    switch (step.type) {
+      case "extract":
+        return "bg-blue-100 border-blue-300";
+      default:
+        return "bg-blue-50 border-blue-200";
+    }
+  } else {
+    switch (step.type) {
+      case "extract":
+        return "bg-blue-25 border-blue-100 hover:bg-blue-50";
+      default:
+        return "bg-white border-gray-200 hover:bg-gray-50";
+    }
+  }
+};
+
 // Component to render a single step as a card
 const StepCard: React.FC<{
   step: Step;
@@ -209,6 +270,17 @@ const StepCard: React.FC<{
         );
         break;
       }
+      case "extract": {
+        const s = step as any; // ExtractStep
+        specificInfo = (
+          <>
+            <p>
+              <strong>Extraction Goal:</strong> {s.extractionGoal}
+            </p>
+          </>
+        );
+        break;
+      }
       default:
         specificInfo = (
           <p>Details not available for type: {(step as any).type}</p>
@@ -223,19 +295,20 @@ const StepCard: React.FC<{
     );
   };
 
-  return (
-    <div
-      id={`event-item-${index}`} // Keep ID for potential scrolling
-      onClick={onSelect}
-      className={` 
-        border rounded-lg mb-3 overflow-hidden cursor-pointer transition-all duration-150 ease-in-out 
-        ${
-          isSelected
-            ? "border-primary shadow-md scale-[1.01]"
-            : "border-border hover:border-muted-foreground/50 hover:shadow-sm"
-        } 
-      `}
-    >
+      return (
+      <div
+        id={`event-item-${index}`} // Keep ID for potential scrolling
+        onClick={onSelect}
+        className={` 
+          border rounded-lg mb-3 overflow-hidden cursor-pointer transition-all duration-150 ease-in-out 
+          ${getStepBgColor(step, isSelected)}
+          ${
+            isSelected
+              ? "shadow-md scale-[1.01]"
+              : "hover:shadow-sm"
+          } 
+        `}
+      >
       {/* Card Content using Flexbox */}
       <div className="flex items-start p-3 space-x-3">
         {/* Left side: Summary and Details */}

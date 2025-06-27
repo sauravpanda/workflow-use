@@ -6,6 +6,7 @@ import {
   StoredCustomKeyEvent,
   StoredEvent,
   StoredRrwebEvent,
+  StoredExtractionEvent,
 } from "../lib/types";
 import {
   ClickStep,
@@ -15,6 +16,7 @@ import {
   ScrollStep,
   Step,
   Workflow,
+  ExtractStep,
 } from "../lib/workflow-types";
 import {
   HttpEvent,
@@ -80,6 +82,8 @@ export default defineBackground(() => {
         return null; // Scroll steps will have null description like in the example
       case "key_press":
         return "Key press element";
+      case "extract":
+        return "Extract information with AI";
       default:
         return "Unknown action";
     }
@@ -94,6 +98,10 @@ export default defineBackground(() => {
         return convertStoredEventsToSteps(sessionLogs[tabId] || []);
       })
       .sort((a, b) => a.timestamp - b.timestamp); // Sort chronologically
+
+    console.log(`🔄 Processing ${allSteps.length} steps for workflow update`);
+    const extractionSteps = allSteps.filter(s => (s as any).type === 'extract');
+    console.log(`🤖 Found ${extractionSteps.length} extraction steps:`, extractionSteps);
 
     // Convert steps to semantic format with proper descriptions
     const semanticSteps = allSteps.map((step, index) => {
@@ -111,10 +119,15 @@ export default defineBackground(() => {
       delete semanticStep.elementText;
       delete semanticStep.screenshot;
       
-      // Handle scroll steps specifically
+      // Handle different step types specifically
       if (step.type === "scroll") {
         delete semanticStep.targetId;
         // Keep scrollX and scrollY for scroll steps
+      } else if (step.type === "extract") {
+        // For extraction steps, preserve extractionGoal and url
+        // Keep: extractionGoal, url, type, description
+        // Already removed: timestamp, tabId, screenshot (these are correct to remove)
+        console.log(`🤖 Processing extraction step:`, semanticStep);
       }
       
       // Convert targetText to target_text for semantic workflow compatibility
@@ -128,6 +141,9 @@ export default defineBackground(() => {
       
       return semanticStep;
     });
+
+    const semanticExtractionSteps = semanticSteps.filter(s => s.type === 'extract');
+    console.log(`✅ Final semantic steps include ${semanticExtractionSteps.length} extraction steps:`, semanticExtractionSteps);
 
     // Create the workflowData object for the Python server (semantic format)
     const semanticWorkflowData: Workflow = {
@@ -477,6 +493,24 @@ export default defineBackground(() => {
           break;
         }
 
+        case "EXTRACTION_STEP": {
+          const extractEvent = event as any; // Type assertion for extraction event
+          if (extractEvent.url && extractEvent.extractionGoal) {
+            const step: ExtractStep = {
+              type: "extract",
+              timestamp: extractEvent.timestamp,
+              tabId: extractEvent.tabId,
+              url: extractEvent.url,
+              extractionGoal: extractEvent.extractionGoal,
+              screenshot: extractEvent.screenshot,
+            };
+            steps.push(step);
+          } else {
+            console.warn("Skipping incomplete EXTRACTION_STEP:", extractEvent);
+          }
+          break;
+        }
+
         // Add cases for other StoredEvent types to Step types if needed
         // e.g., CUSTOM_SELECT_EVENT -> SelectStep
         // e.g., CUSTOM_TAB_CREATED -> TabCreatedStep
@@ -665,6 +699,83 @@ export default defineBackground(() => {
         sendEventToServer(eventToSend);
       }
       sendResponse({ status: "stopped" }); // Send simple confirmation
+    }
+    // --- Add Extraction Step from Sidepanel ---
+    else if (message.type === "ADD_EXTRACTION_STEP") {
+      console.log("🤖 Received ADD_EXTRACTION_STEP request:", message.payload);
+      
+      if (!isRecordingEnabled) {
+        console.error("❌ Recording is not enabled");
+        sendResponse({ status: "error", message: "Recording is not active" });
+        return false;
+      }
+
+      try {
+        // For sidepanel messages, we need to get the active tab
+        // Since this is from sidepanel, sender.tab will be undefined
+        // Let's use a direct approach with chrome.tabs.query but handle it synchronously
+        
+        isAsync = true;
+        
+        chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+          try {
+            console.log("📋 Active tabs found:", tabs?.length || 0);
+            
+            if (chrome.runtime.lastError) {
+              console.error("❌ Chrome tabs query error:", chrome.runtime.lastError);
+              sendResponse({ status: "error", message: "Chrome tabs query failed" });
+              return;
+            }
+            
+            if (!tabs || tabs.length === 0 || !tabs[0]?.id) {
+              console.error("❌ No active tab found");
+              sendResponse({ status: "error", message: "No active tab found" });
+              return;
+            }
+
+            const tabId = tabs[0].id;
+            const tabUrl = tabs[0].url || "";
+            
+            console.log("✅ Using tab ID:", tabId, "URL:", tabUrl);
+            
+            const extractionStep: StoredExtractionEvent = {
+              timestamp: message.payload.timestamp,
+              tabId: tabId,
+              url: tabUrl,
+              extractionGoal: message.payload.extractionGoal,
+              messageType: "EXTRACTION_STEP",
+            };
+
+            console.log("📝 Creating extraction step:", extractionStep);
+
+            if (!sessionLogs[tabId]) {
+              console.log("🆕 Initializing sessionLogs for tab:", tabId);
+              sessionLogs[tabId] = [];
+            }
+            
+            sessionLogs[tabId].push(extractionStep);
+            console.log("✅ Added extraction step to sessionLogs. Total events for tab:", sessionLogs[tabId].length);
+            
+            // Broadcast update (don't await to avoid blocking)
+            broadcastWorkflowDataUpdate();
+            console.log("✅ Broadcasted workflow update");
+            
+            // Send success response
+            sendResponse({ status: "added" });
+            
+          } catch (error) {
+            console.error("❌ Error in tabs.query callback:", error);
+            sendResponse({ status: "error", message: `Callback error: ${error}` });
+          }
+        });
+        
+        return true; // Keep message channel open
+        
+      } catch (error) {
+        console.error("❌ Error setting up extraction step:", error);
+        sendResponse({ status: "error", message: `Setup error: ${error}` });
+        return false;
+      }
     }
     // --- Status Request from Content Script ---
     else if (message.type === "REQUEST_RECORDING_STATUS" && sender.tab?.id) {

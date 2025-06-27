@@ -493,6 +493,22 @@ async def _convert_recording_to_semantic_workflow(recording_data, description, s
 					except Exception as e:
 						typer.echo(f"Warning: Could not refresh semantic mapping after scroll: {e}")
 						semantic_mapping = {}
+			
+			elif step_type == 'extract':
+				# Keep extraction steps as-is with their extractionGoal
+				extraction_step = {
+					'description': step.get('description', 'Extract information with AI'),
+					'type': 'extract',
+					'extractionGoal': step.get('extractionGoal', 'Extract information from the page'),
+					'url': step.get('url', current_url)
+				}
+				semantic_steps.append(extraction_step)
+				typer.echo(f"Added extraction step: {extraction_step['extractionGoal']}")
+			
+			else:
+				# Unknown step type - keep as-is but warn
+				typer.echo(f"Warning: Unknown step type '{step_type}' - keeping as-is")
+				semantic_steps.append(step)
 	
 	finally:
 		await browser.close()
@@ -1257,10 +1273,17 @@ def run_workflow_no_ai_command(
 		help='Path to the .workflow.json file.',
 		show_default=False,
 	),
+	enable_extraction: bool = typer.Option(
+		False,
+		'--enable-extraction',
+		'-e',
+		help='Enable AI-powered extraction steps (requires OpenAI API key for extraction steps only)',
+	),
 ):
 	"""
 	Loads and executes a workflow using semantic abstraction without any AI/LLM involvement.
 	This uses visible text mappings to deterministic selectors instead of fragile CSS selectors.
+	Optionally enables AI-powered extraction steps while keeping semantic abstraction for interactions.
 	"""
 
 	async def _run_workflow_no_ai():
@@ -1271,30 +1294,39 @@ def run_workflow_no_ai_command(
 
 		try:
 			# Instantiate Browser for the Workflow instance
-			# No LLM needed for semantic abstraction approach
 			playwright = await patchright_async_playwright().start()
 
 			browser = Browser(playwright=playwright)
-			# Create a dummy LLM instance since it's required by the constructor but won't be used
+			# Create a dummy LLM instance since it's required by the constructor but won't be used for interactions
 			dummy_llm = None
+			extraction_llm = None
+			
 			try:
 				from langchain_openai import ChatOpenAI
 				dummy_llm = ChatOpenAI(model='gpt-4o-mini')
-			except:
-				# If OpenAI is not available, we'll handle it gracefully
-				pass
+				if enable_extraction:
+					extraction_llm = ChatOpenAI(model='gpt-4o-mini')
+					typer.secho('AI extraction enabled - will use LLM for extraction steps only.', fg=typer.colors.BLUE)
+			except Exception as e:
+				if enable_extraction:
+					typer.secho(f'Warning: Could not initialize LLM for extraction: {e}', fg=typer.colors.YELLOW)
+					typer.secho('Continuing with basic extraction fallback...', fg=typer.colors.YELLOW)
 			
 			workflow_obj = Workflow.load_from_file(
 				str(workflow_path),
 				browser=browser,
-				llm=dummy_llm,  # Won't be used in run_with_no_ai
+				llm=dummy_llm,  # Won't be used in run_with_no_ai for interactions
+				page_extraction_llm=extraction_llm,  # Will be used for extraction steps if enabled
 			)
 		except Exception as e:
 			typer.secho(f'Error loading workflow: {e}', fg=typer.colors.RED)
 			raise typer.Exit(code=1)
 
 		typer.secho('Workflow loaded successfully.', fg=typer.colors.GREEN, bold=True)
-		typer.secho('Using semantic abstraction mode (no AI/LLM).', fg=typer.colors.BLUE, bold=True)
+		if enable_extraction and extraction_llm:
+			typer.secho('Using semantic abstraction mode with AI-powered extraction.', fg=typer.colors.BLUE, bold=True)
+		else:
+			typer.secho('Using semantic abstraction mode (no AI/LLM).', fg=typer.colors.BLUE, bold=True)
 
 		inputs = {}
 		input_definitions = workflow_obj.inputs_def  # Access inputs_def from the Workflow instance
@@ -1354,6 +1386,35 @@ def run_workflow_no_ai_command(
 			typer.echo(typer.style('Result:', bold=True))
 			# Output the number of steps executed
 			typer.echo(f'{typer.style(str(len(result.step_results)), bold=True)} steps executed using semantic abstraction.')
+			
+			# Display extraction results if any
+			extraction_results = []
+			for i, step_result in enumerate(result.step_results, 1):
+				if hasattr(step_result, 'extracted_data') and step_result.extracted_data:
+					extraction_results.append((i, step_result.extracted_data))
+			
+			if extraction_results:
+				typer.echo()
+				typer.secho('=== EXTRACTION RESULTS ===', fg=typer.colors.CYAN, bold=True)
+				for step_num, extracted_data in extraction_results:
+					typer.echo()
+					typer.echo(f'{typer.style(f"Step {step_num} Extraction:", bold=True)}')
+					typer.echo(f'  Goal: {typer.style(extracted_data.get("extraction_goal", "N/A"), fg=typer.colors.YELLOW)}')
+					typer.echo(f'  URL: {extracted_data.get("page_url", "N/A")}')
+					typer.echo(f'  Method: {extracted_data.get("extraction_method", "N/A")}')
+					
+					if 'extracted_content' in extracted_data:
+						content = extracted_data['extracted_content']
+						# Limit display length for readability
+						if len(content) > 500:
+							content = content[:500] + "... [truncated]"
+						typer.echo(f'  Result:')
+						# Indent the content for better readability
+						for line in content.split('\n'):
+							typer.echo(f'    {line}')
+					elif 'error' in extracted_data:
+						typer.secho(f'  Error: {extracted_data["error"]}', fg=typer.colors.RED)
+				typer.echo()
 
 		except Exception as e:
 			typer.secho(f'Error running workflow: {e}', fg=typer.colors.RED)

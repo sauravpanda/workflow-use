@@ -53,6 +53,15 @@ export interface StoredCustomKeyEvent {
   screenshot?: string;
 }
 
+export interface StoredExtractionEvent {
+  timestamp: number;
+  url: string;
+  tabId: number;
+  extractionGoal: string;
+  messageType: "EXTRACTION_STEP";
+  screenshot?: string;
+}
+
 export interface StoredTabEvent {
   timestamp: number;
   tabId: number;
@@ -84,7 +93,8 @@ export type StoredEvent =
   | StoredCustomSelectEvent
   | StoredCustomKeyEvent
   | StoredTabEvent
-  | StoredRrwebEvent;
+  | StoredRrwebEvent
+  | StoredExtractionEvent;
 
 // --- Data Structures ---
 

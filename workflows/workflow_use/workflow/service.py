@@ -745,7 +745,7 @@ class Workflow:
 		results: List[ActionResult | AgentHistoryList] = []
 
 		await self.browser.start()
-		semantic_executor = SemanticWorkflowExecutor(self.browser)
+		semantic_executor = SemanticWorkflowExecutor(self.browser, page_extraction_llm=self.page_extraction_llm)
 		
 		try:
 			for step_index, step_dict in enumerate(self.schema.steps):

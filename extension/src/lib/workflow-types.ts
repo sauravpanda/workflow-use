@@ -24,7 +24,8 @@ export type Step =
   | SelectStep
   | CheckboxStep
   | KeyPressStep
-  | ScrollStep;
+  | ScrollStep
+  | ExtractStep;
 // Add other step types here as needed, e.g., TabCreatedStep etc.
 
 export interface BaseStep {
@@ -121,6 +122,14 @@ export interface CheckboxStep extends BaseStep {
   checked: boolean;
   targetText?: string;
   screenshot?: string;
+}
+
+export interface ExtractStep extends BaseStep {
+  type: "extract";
+  url: string;
+  extractionGoal: string; // What information to extract from the page
+  output?: string; // Context key to store the extracted data
+  screenshot?: string; // Optional in source
 }
 
 // Potential future step types based on StoredEvent

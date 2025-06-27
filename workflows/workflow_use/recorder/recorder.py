@@ -10,10 +10,10 @@ from workflow_use.recorder.service import RecordingService  # Adjust import path
 @dataclass
 class BaseEvent:
 	"""Base class for all recorded events."""
-	type: str
 	timestamp: int
 	url: str
-	description: str = ""
+	description: str
+	type: str = ""
 
 
 @dataclass 
@@ -26,7 +26,12 @@ class NavigationEvent(BaseEvent):
 class ClickEvent(BaseEvent):
 	"""Click on an element."""
 	type: str = "click"
-	target_text: str = ""
+	target_text: str = ""  # Primary text-based identifier (e.g., "Submit (in Personal Information)")
+	# Optional context hints for disambiguation (text-based, not selectors)
+	container_hint: str = ""  # e.g., "Personal Information", "Billing Section"
+	position_hint: str = ""   # e.g., "item 2 of 3", "first", "last"
+	interaction_type: str = ""  # e.g., "form_submit", "table_action", "navigation"
+	# Legacy fields for backward compatibility - discouraged in new workflows
 	element_tag: str = ""
 	css_selector: str = ""
 	xpath: str = ""
@@ -36,9 +41,14 @@ class ClickEvent(BaseEvent):
 class InputEvent(BaseEvent):
 	"""Input into a text field."""
 	type: str = "input" 
-	target_text: str = ""
+	target_text: str = ""  # Primary text-based identifier
 	value: str = ""
 	input_type: str = "text"  # text, password, email, number, etc.
+	# Optional context hints for disambiguation
+	container_hint: str = ""
+	position_hint: str = ""
+	interaction_type: str = ""
+	# Legacy fields for backward compatibility
 	element_tag: str = ""
 	css_selector: str = ""
 	xpath: str = ""
@@ -51,7 +61,12 @@ class RadioEvent(BaseEvent):
 	field_name: str = ""  # The group name (e.g., "Gender")
 	selected_option: str = ""  # The selected value (e.g., "Male")
 	options: List[str] = None  # All available options in the group
-	target_text: str = ""
+	target_text: str = ""  # Primary text-based identifier
+	# Optional context hints for disambiguation
+	container_hint: str = ""
+	position_hint: str = ""
+	interaction_type: str = ""
+	# Legacy fields for backward compatibility
 	css_selector: str = ""
 	xpath: str = ""
 	
@@ -68,7 +83,12 @@ class SelectEvent(BaseEvent):
 	selected_option: str = ""  # The selected text
 	selected_value: str = ""  # The selected value
 	options: List[Dict[str, str]] = None  # All options [{"text": "...", "value": "..."}]
-	target_text: str = ""
+	target_text: str = ""  # Primary text-based identifier
+	# Optional context hints for disambiguation
+	container_hint: str = ""
+	position_hint: str = ""
+	interaction_type: str = ""
+	# Legacy fields for backward compatibility
 	css_selector: str = ""
 	xpath: str = ""
 	
@@ -83,7 +103,12 @@ class CheckboxEvent(BaseEvent):
 	type: str = "checkbox"
 	field_name: str = ""
 	checked: bool = False
-	target_text: str = ""
+	target_text: str = ""  # Primary text-based identifier
+	# Optional context hints for disambiguation
+	container_hint: str = ""
+	position_hint: str = ""
+	interaction_type: str = ""
+	# Legacy fields for backward compatibility
 	css_selector: str = ""
 	xpath: str = ""
 
@@ -94,7 +119,12 @@ class ButtonEvent(BaseEvent):
 	type: str = "button"
 	button_text: str = ""  # The visible text on the button
 	button_type: str = ""  # submit, button, reset, etc.
-	target_text: str = ""
+	target_text: str = ""  # Primary text-based identifier
+	# Optional context hints for disambiguation
+	container_hint: str = ""
+	position_hint: str = ""
+	interaction_type: str = ""
+	# Legacy fields for backward compatibility
 	css_selector: str = ""
 	xpath: str = ""
 
@@ -123,6 +153,62 @@ class EnhancedRecordingService(RecordingService):
 		else:
 			# Handle other event types as needed
 			return None
+	
+	def _extract_text_context_hints(self, payload: Dict) -> Dict:
+		"""Extract text-based context hints from payload (no CSS selectors)."""
+		semantic_info = payload.get('semanticInfo', {})
+		
+		# Extract container context as text hint
+		container_hint = ""
+		container_context = semantic_info.get('container_context', {})
+		if container_context:
+			container_text = container_context.get('text', '').strip()
+			container_id = container_context.get('id', '').strip()
+			
+			if container_text and len(container_text) < 50:
+				container_hint = container_text
+			elif container_id:
+				container_hint = container_id.replace("-", " ").replace("_", " ").title()
+		
+		# Extract position context as text hint
+		position_hint = ""
+		sibling_context = semantic_info.get('sibling_context', {})
+		if sibling_context:
+			position = sibling_context.get('position')
+			total = sibling_context.get('total')
+			if position is not None and total is not None and total > 1:
+				position_hint = f"item {position + 1} of {total}"
+		
+		# Extract interaction type hint
+		interaction_type = ""
+		interaction_hints = semantic_info.get('interaction_hints', [])
+		if interaction_hints and isinstance(interaction_hints, list) and len(interaction_hints) > 0:
+			interaction_type = interaction_hints[0]  # Use first hint
+		
+		return {
+			'container_hint': container_hint,
+			'position_hint': position_hint,
+			'interaction_type': interaction_type
+		}
+	
+	def _create_contextual_target_text(self, base_text: str, context_hints: Dict) -> str:
+		"""Create contextual target text using context hints."""
+		if not base_text:
+			return base_text
+		
+		result_text = base_text
+		
+		# Add container context if available
+		container_hint = context_hints.get('container_hint', '').strip()
+		if container_hint and container_hint.lower() not in result_text.lower():
+			result_text = f"{result_text} (in {container_hint})"
+		
+		# Add position context if available
+		position_hint = context_hints.get('position_hint', '').strip()
+		if position_hint and position_hint not in result_text:
+			result_text = f"{result_text} ({position_hint})"
+		
+		return result_text
 	
 	async def _process_click_event(self, payload: Dict) -> Optional[BaseEvent]:
 		"""Process click events with smart type detection."""
@@ -163,17 +249,24 @@ class EnhancedRecordingService(RecordingService):
 	
 	async def _process_input_event(self, payload: Dict) -> Optional[InputEvent]:
 		"""Process input events."""
+		context_hints = self._extract_text_context_hints(payload)
+		
+		# Create contextual target text
+		base_text = payload.get('targetText', '')
+		target_text = self._create_contextual_target_text(base_text, context_hints)
+		
 		return InputEvent(
 			type="input",
 			timestamp=payload.get('timestamp', 0),
 			url=payload.get('url', ''),
-			target_text=payload.get('targetText', ''),
+			target_text=target_text,
 			value=payload.get('value', ''),
 			input_type=payload.get('inputType', 'text'),
 			element_tag=payload.get('elementTag', ''),
 			css_selector=payload.get('cssSelector', ''),
 			xpath=payload.get('xpath', ''),
-			description=f"Enter '{payload.get('value', '')}' into {payload.get('targetText', 'input field')}"
+			description=f"Enter '{payload.get('value', '')}' into {target_text or 'input field'}",
+			**context_hints
 		)
 	
 	async def _process_select_event(self, payload: Dict) -> Optional[SelectEvent]:
@@ -188,6 +281,12 @@ class EnhancedRecordingService(RecordingService):
 				# Convert string options to dict format
 				options.append({"text": str(opt), "value": str(opt)})
 		
+		context_hints = self._extract_text_context_hints(payload)
+		
+		# Create contextual target text
+		base_text = payload.get('targetText', '')
+		target_text = self._create_contextual_target_text(base_text, context_hints)
+		
 		return SelectEvent(
 			type="select",
 			timestamp=payload.get('timestamp', 0),
@@ -196,10 +295,11 @@ class EnhancedRecordingService(RecordingService):
 			selected_option=payload.get('selectedText', ''),
 			selected_value=payload.get('selectedValue', ''),
 			options=options,
-			target_text=payload.get('targetText', ''),
+			target_text=target_text,
 			css_selector=payload.get('cssSelector', ''),
 			xpath=payload.get('xpath', ''),
-			description=f"Select '{payload.get('selectedText', '')}' from {payload.get('fieldName', 'dropdown')}"
+			description=f"Select '{payload.get('selectedText', '')}' from {target_text or payload.get('fieldName', 'dropdown')}",
+			**context_hints
 		)
 	
 	async def _create_radio_event(self, payload: Dict, radio_info: Dict, semantic_info: Dict) -> RadioEvent:
@@ -208,6 +308,12 @@ class EnhancedRecordingService(RecordingService):
 		selected_option = radio_info.get('optionValue', semantic_info.get('optionValue', ''))
 		all_options = radio_info.get('allOptions', semantic_info.get('allOptions', []))
 		
+		context_hints = self._extract_text_context_hints(payload)
+		
+		# Create contextual target text
+		base_text = payload.get('targetText', selected_option)
+		target_text = self._create_contextual_target_text(base_text, context_hints)
+		
 		return RadioEvent(
 			type="radio",
 			timestamp=payload.get('timestamp', 0),
@@ -215,10 +321,11 @@ class EnhancedRecordingService(RecordingService):
 			field_name=field_name,
 			selected_option=selected_option,
 			options=all_options,
-			target_text=payload.get('targetText', selected_option),
+			target_text=target_text,
 			css_selector=payload.get('cssSelector', ''),
 			xpath=payload.get('xpath', ''),
-			description=f"Select '{selected_option}' for {field_name}"
+			description=f"Select '{selected_option}' for {field_name}",
+			**context_hints
 		)
 	
 	async def _create_checkbox_event(self, payload: Dict, semantic_info: Dict) -> CheckboxEvent:
@@ -226,23 +333,35 @@ class EnhancedRecordingService(RecordingService):
 		field_name = semantic_info.get('fieldName', semantic_info.get('labelText', ''))
 		checked = payload.get('checked', False)
 		
+		context_hints = self._extract_text_context_hints(payload)
+		
+		# Create contextual target text
+		base_text = payload.get('targetText', field_name)
+		target_text = self._create_contextual_target_text(base_text, context_hints)
+		
 		return CheckboxEvent(
 			type="checkbox",
 			timestamp=payload.get('timestamp', 0),
 			url=payload.get('url', ''),
 			field_name=field_name,
 			checked=checked,
-			target_text=payload.get('targetText', field_name),
+			target_text=target_text,
 			css_selector=payload.get('cssSelector', ''),
 			xpath=payload.get('xpath', ''),
-			description=f"{'Check' if checked else 'Uncheck'} {field_name}"
+			description=f"{'Check' if checked else 'Uncheck'} {field_name}",
+			**context_hints
 		)
 	
 	async def _create_button_event(self, payload: Dict, semantic_info: Dict) -> ButtonEvent:
 		"""Create a button click event."""
-		target_text = payload.get('targetText') or semantic_info.get('labelText', '')
-		button_text = target_text or semantic_info.get('textContent', '')
+		base_text = payload.get('targetText') or semantic_info.get('labelText', '')
+		button_text = base_text or semantic_info.get('textContent', '')
 		button_type = payload.get('elementType', 'button')
+		
+		context_hints = self._extract_text_context_hints(payload)
+		
+		# Create contextual target text
+		target_text = self._create_contextual_target_text(base_text, context_hints)
 		
 		return ButtonEvent(
 			type="button",
@@ -253,12 +372,18 @@ class EnhancedRecordingService(RecordingService):
 			target_text=target_text,
 			css_selector=payload.get('cssSelector', ''),
 			xpath=payload.get('xpath', ''),
-			description=f"Click button '{button_text}'" if button_text else "Click button"
+			description=f"Click button '{button_text}'",
+			**context_hints
 		)
 
 	async def _create_click_event(self, payload: Dict, semantic_info: Dict) -> ClickEvent:
 		"""Create a regular click event."""
-		target_text = payload.get('targetText') or semantic_info.get('labelText', '')
+		base_text = payload.get('targetText') or semantic_info.get('labelText', '')
+		
+		context_hints = self._extract_text_context_hints(payload)
+		
+		# Create contextual target text
+		target_text = self._create_contextual_target_text(base_text, context_hints)
 		
 		return ClickEvent(
 			type="click",
@@ -268,7 +393,8 @@ class EnhancedRecordingService(RecordingService):
 			element_tag=payload.get('elementTag', ''),
 			css_selector=payload.get('cssSelector', ''),
 			xpath=payload.get('xpath', ''),
-			description=f"Click {target_text or 'element'}"
+			description=f"Click {target_text or 'element'}",
+			**context_hints
 		)
 	
 	async def _create_input_focus_event(self, payload: Dict, semantic_info: Dict) -> Optional[BaseEvent]:
@@ -291,7 +417,12 @@ class EnhancedRecordingService(RecordingService):
 	
 	async def _handle_label_click(self, payload: Dict, semantic_info: Dict) -> Optional[ClickEvent]:
 		"""Handle label click - may be merged later with input focus."""
-		target_text = payload.get('targetText') or semantic_info.get('labelText', '')
+		base_text = payload.get('targetText') or semantic_info.get('labelText', '')
+		
+		context_hints = self._extract_text_context_hints(payload)
+		
+		# Create contextual target text
+		target_text = self._create_contextual_target_text(base_text, context_hints)
 		
 		event = ClickEvent(
 			type="click",
@@ -301,7 +432,8 @@ class EnhancedRecordingService(RecordingService):
 			element_tag="label",
 			css_selector=payload.get('cssSelector', ''),
 			xpath=payload.get('xpath', ''),
-			description=f"Click label: {target_text}"
+			description=f"Click label: {target_text}",
+			**context_hints
 		)
 		
 		# Add to pending events for potential merging
@@ -327,6 +459,8 @@ class EnhancedRecordingService(RecordingService):
 	
 	async def _create_merged_input_event(self, label_click: ClickEvent, input_payload: Dict, semantic_info: Dict) -> InputEvent:
 		"""Create a merged input event from label click + input focus."""
+		context_hints = self._extract_text_context_hints(input_payload)
+		
 		return InputEvent(
 			type="input",
 			timestamp=input_payload.get('timestamp', 0),
@@ -337,7 +471,8 @@ class EnhancedRecordingService(RecordingService):
 			element_tag=input_payload.get('elementTag', ''),
 			css_selector=input_payload.get('cssSelector', ''),
 			xpath=input_payload.get('xpath', ''),
-			description=f"Click and focus on {label_click.target_text or 'input field'}"
+			description=f"Click and focus on {label_click.target_text or 'input field'}",
+			**context_hints
 		)
 	
 	async def _process_navigation_event(self, payload: Dict) -> NavigationEvent:

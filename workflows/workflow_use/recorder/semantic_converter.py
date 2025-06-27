@@ -55,15 +55,44 @@ class SemanticWorkflowConverter:
         
         step_type = step.get("type")
         
-        if step_type in ["click", "input"]:
-            # For click and input steps, prioritize target_text over cssSelector
+        if step_type in ["click", "input", "select_change", "key_press"]:
+            # For interactive steps, prioritize target_text over cssSelector
             target_text = self._extract_semantic_target_text(step)
             
             if target_text:
                 semantic_step["target_text"] = target_text
+                
+                # Extract text-based context hints (no CSS selectors stored)
+                semantic_info = step.get("semanticInfo", {})
+                if semantic_info:
+                    # Extract container context as text hint
+                    container_context = semantic_info.get("container_context", {})
+                    if container_context:
+                        container_text = container_context.get("text", "").strip()
+                        container_id = container_context.get("id", "").strip()
+                        
+                        if container_text and len(container_text) < 50:
+                            semantic_step["container_hint"] = container_text
+                        elif container_id:
+                            formatted_id = container_id.replace("-", " ").replace("_", " ").title()
+                            semantic_step["container_hint"] = formatted_id
+                    
+                    # Extract position context as text hint
+                    sibling_context = semantic_info.get("sibling_context", {})
+                    if sibling_context:
+                        position = sibling_context.get("position")
+                        total = sibling_context.get("total")
+                        if position is not None and total is not None and total > 1:
+                            semantic_step["position_hint"] = f"item {position + 1} of {total}"
+                    
+                    # Extract interaction type hint
+                    interaction_hints = semantic_info.get("interaction_hints", [])
+                    if interaction_hints and isinstance(interaction_hints, list) and len(interaction_hints) > 0:
+                        semantic_step["interaction_type"] = interaction_hints[0]  # Use first hint
+                
                 # Add a description that mentions the semantic targeting
                 if not semantic_step.get("description"):
-                    action = "Click" if step_type == "click" else "Input"
+                    action = {"click": "Click", "input": "Input", "select_change": "Select", "key_press": "Press key on"}.get(step_type, "Interact with")
                     semantic_step["description"] = f"{action} element"
                 
                 logger.info(f"Converted {step_type} step to use semantic targeting: '{target_text}'")
@@ -79,10 +108,6 @@ class SemanticWorkflowConverter:
             # Scroll steps don't need semantic conversion
             pass
         
-        elif step_type == "key_press":
-            # Key press steps don't need semantic conversion
-            pass
-        
         return semantic_step
     
     def _extract_semantic_target_text(self, step: Dict[str, Any]) -> Optional[str]:
@@ -90,19 +115,46 @@ class SemanticWorkflowConverter:
         
         # Priority order for semantic targeting:
         # 1. targetText (if already captured by extension)
-        # 2. elementText (visible text content)
-        # 3. Extract from semanticInfo if available
-        # 4. Extract meaningful text from element attributes
+        # 2. hierarchical target_text with context
+        # 3. elementText (visible text content)
+        # 4. Extract from semanticInfo if available
+        # 5. Extract meaningful text from element attributes
         
         # Check if we already have targetText from the updated extension
         if step.get("targetText"):
             return step["targetText"].strip()
         
-        # Check semantic info if available (from updated extension)
+        # Check for hierarchical context to create contextual target text
         semantic_info = step.get("semanticInfo", {})
         if semantic_info:
-            # Priority: labelText > placeholder > ariaLabel > textContent > name > id
-            for field in ["labelText", "placeholder", "ariaLabel", "textContent", "name", "id"]:
+            base_text = None
+            container_context = semantic_info.get("container_context", {})
+            
+            # Get base text
+            for field in ["labelText", "textContent", "name", "id"]:
+                value = semantic_info.get(field, "").strip()
+                if value and len(value) < 100:
+                    base_text = value
+                    break
+            
+            # Add hierarchical context if available
+            if base_text and container_context:
+                container_text = container_context.get("text", "").strip()
+                container_id = container_context.get("id", "").strip()
+                
+                # Create contextual target text
+                if container_text and len(container_text) < 50:
+                    return f"{base_text} (in {container_text})"
+                elif container_id and len(container_id) < 30:
+                    formatted_id = container_id.replace("-", " ").replace("_", " ").title()
+                    return f"{base_text} (in {formatted_id})"
+            
+            # Fallback to base text
+            if base_text:
+                return base_text
+            
+            # Priority: placeholder > ariaLabel > other fields
+            for field in ["placeholder", "ariaLabel"]:
                 value = semantic_info.get(field, "").strip()
                 if value and len(value) < 100:  # Reasonable length for targeting
                     return value
