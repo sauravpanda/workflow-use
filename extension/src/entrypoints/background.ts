@@ -6,6 +6,7 @@ import {
   StoredCustomKeyEvent,
   StoredEvent,
   StoredRrwebEvent,
+  StoredExtractionEvent,
 } from "../lib/types";
 import {
   ClickStep,
@@ -15,6 +16,7 @@ import {
   ScrollStep,
   Step,
   Workflow,
+  ExtractStep,
 } from "../lib/workflow-types";
 import {
   HttpEvent,
@@ -29,6 +31,10 @@ export default defineBackground(() => {
 
   // Store tab information (URL, potentially title)
   const tabInfo: { [tabId: number]: { url?: string; title?: string } } = {};
+
+  // Track recent user interactions to distinguish intentional vs side-effect navigation
+  const recentUserInteractions: { [tabId: number]: number } = {}; // timestamp of last user interaction
+  const USER_INTERACTION_TIMEOUT = 5000; // 5 seconds (increased for testing)
 
   let isRecordingEnabled = true; // Default to disabled (OFF)
   let lastWorkflowHash: string | null = null; // Cache for the last logged workflow hash
@@ -63,6 +69,26 @@ export default defineBackground(() => {
     }
   }
 
+  // Function to generate step descriptions for semantic workflows
+  function generateStepDescription(step: Step): string | null {
+    switch (step.type) {
+      case "click":
+        return "Click element";
+      case "input":
+        return "Input element";
+      case "navigation":
+        return `Navigate to ${step.url}`;
+      case "scroll":
+        return null; // Scroll steps will have null description like in the example
+      case "key_press":
+        return "Key press element";
+      case "extract":
+        return "Extract information with AI";
+      default:
+        return "Unknown action";
+    }
+  }
+
   // Function to broadcast workflow data updates to the console bus
   async function broadcastWorkflowDataUpdate(): Promise<Workflow> {
     // console.log("[DEBUG] broadcastWorkflowDataUpdate: Entered function"); // Optional: Keep for debugging
@@ -73,13 +99,70 @@ export default defineBackground(() => {
       })
       .sort((a, b) => a.timestamp - b.timestamp); // Sort chronologically
 
-    // Create the workflowData object *after* sorting steps, but hash only steps
-    const workflowData: Workflow = {
-      name: "Recorded Workflow",
+    console.log(`🔄 Processing ${allSteps.length} steps for workflow update`);
+    const extractionSteps = allSteps.filter(s => (s as any).type === 'extract');
+    console.log(`🤖 Found ${extractionSteps.length} extraction steps:`, extractionSteps);
+
+    // Convert steps to semantic format with proper descriptions
+    const semanticSteps = allSteps.map((step, index) => {
+      const semanticStep: any = {
+        ...step,
+        description: generateStepDescription(step),
+      };
+      
+      // Remove internal fields that shouldn't be in the final workflow
+      delete semanticStep.timestamp;
+      delete semanticStep.tabId;
+      delete semanticStep.frameUrl;
+      delete semanticStep.xpath;
+      delete semanticStep.elementTag;
+      delete semanticStep.elementText;
+      delete semanticStep.screenshot;
+      
+      // Handle different step types specifically
+      if (step.type === "scroll") {
+        delete semanticStep.targetId;
+        // Keep scrollX and scrollY for scroll steps
+      } else if (step.type === "extract") {
+        // For extraction steps, preserve extractionGoal and url
+        // Keep: extractionGoal, url, type, description
+        // Already removed: timestamp, tabId, screenshot (these are correct to remove)
+        console.log(`🤖 Processing extraction step:`, semanticStep);
+      }
+      
+      // Convert targetText to target_text for semantic workflow compatibility
+      if (semanticStep.targetText) {
+        semanticStep.target_text = semanticStep.targetText;
+        delete semanticStep.targetText;
+      } else {
+        // Ensure target_text field exists (set to null if no semantic text available)
+        semanticStep.target_text = null;
+      }
+      
+      return semanticStep;
+    });
+
+    const semanticExtractionSteps = semanticSteps.filter(s => s.type === 'extract');
+    console.log(`✅ Final semantic steps include ${semanticExtractionSteps.length} extraction steps:`, semanticExtractionSteps);
+
+    // Create the workflowData object for the Python server (semantic format)
+    const semanticWorkflowData: Workflow = {
+      workflow_analysis: "Semantic version of recorded workflow. Uses visible text to identify elements instead of CSS selectors for improved reliability.",
+      name: "Recorded Workflow (Semantic)",
       description: `Recorded on ${new Date().toLocaleString()}`,
-      version: "1.0.0",
+      version: "1.0",
       input_schema: [],
-      steps: allSteps, // allSteps is used here
+      steps: semanticSteps, // Use processed semantic steps
+    };
+
+    // Create the workflowData object for the UI (with original targetText)
+    const uiWorkflowData: Workflow = {
+      workflow_analysis: "Semantic version of recorded workflow. Uses visible text to identify elements instead of CSS selectors for improved reliability.",
+      name: "Recorded Workflow (Semantic)",
+      description: `Recorded on ${new Date().toLocaleString()}`,
+      version: "1.0",
+      input_schema: [],
+      steps: allSteps, // Use original steps with targetText for UI
     };
 
     const allStepsString = JSON.stringify(allSteps); // Hash based on allSteps
@@ -90,20 +173,20 @@ export default defineBackground(() => {
     // Condition to skip logging if the hash of steps is the same
     if (lastWorkflowHash !== null && currentWorkflowHash === lastWorkflowHash) {
       // console.log("[DEBUG] broadcastWorkflowDataUpdate: Steps unchanged, skipping log."); // Optional
-      return workflowData;
+      return uiWorkflowData;
     }
 
     lastWorkflowHash = currentWorkflowHash;
-    // console.log("[DEBUG] broadcastWorkflowDataUpdate: Steps changed, workflowData object:", JSON.parse(JSON.stringify(workflowData))); // Optional
+    // console.log("[DEBUG] broadcastWorkflowDataUpdate: Steps changed, workflowData object:", JSON.parse(JSON.stringify(uiWorkflowData))); // Optional
 
-    // Send workflow update to Python server
+    // Send semantic workflow update to Python server
     const eventToSend: HttpWorkflowUpdateEvent = {
       type: "WORKFLOW_UPDATE",
       timestamp: Date.now(),
-      payload: workflowData,
+      payload: semanticWorkflowData, // Send semantic format to server
     };
     sendEventToServer(eventToSend);
-    return workflowData;
+    return uiWorkflowData; // Return UI format to extension
   }
 
   // Function to broadcast the recording status to all content scripts and sidepanel
@@ -233,11 +316,28 @@ export default defineBackground(() => {
               url: clickEvent.url,
               frameUrl: clickEvent.frameUrl,
               xpath: clickEvent.xpath,
-              cssSelector: clickEvent.cssSelector,
               elementTag: clickEvent.elementTag,
               elementText: clickEvent.elementText,
               screenshot: clickEvent.screenshot,
             };
+            
+            // Prioritize target_text for semantic workflows, but include cssSelector for complex elements
+            if (clickEvent.targetText && clickEvent.targetText.trim()) {
+              step.targetText = clickEvent.targetText;
+              
+              // For radio buttons, checkboxes, and complex interactive elements, also include cssSelector
+              if (clickEvent.cssSelector && 
+                  (clickEvent.cssSelector.includes('radio') || 
+                   clickEvent.cssSelector.includes('checkbox') ||
+                   clickEvent.cssSelector.includes('role="radio"') ||
+                   clickEvent.cssSelector.includes('role="checkbox"') ||
+                   clickEvent.elementTag.toLowerCase() === 'button')) {
+                step.cssSelector = clickEvent.cssSelector;
+              }
+            } else if (clickEvent.cssSelector) {
+              step.cssSelector = clickEvent.cssSelector;
+            }
+            
             steps.push(step);
           } else {
             console.warn("Skipping incomplete CUSTOM_CLICK_EVENT:", clickEvent);
@@ -263,13 +363,20 @@ export default defineBackground(() => {
               lastStep.url === inputEvent.url &&
               lastStep.frameUrl === inputEvent.frameUrl && // Ensure frameUrls match if both exist
               lastStep.xpath === inputEvent.xpath &&
-              lastStep.cssSelector === inputEvent.cssSelector &&
+              ((lastStep as InputStep).targetText === inputEvent.targetText || 
+               (lastStep as InputStep).cssSelector === inputEvent.cssSelector) &&
               lastStep.elementTag === inputEvent.elementTag
             ) {
               // Update the last input step
               (lastStep as InputStep).value = inputEvent.value;
               lastStep.timestamp = inputEvent.timestamp; // Update to latest timestamp
               (lastStep as InputStep).screenshot = inputEvent.screenshot; // Update to latest screenshot
+              
+              // Update semantic targeting if available
+              if (inputEvent.targetText && inputEvent.targetText.trim()) {
+                (lastStep as InputStep).targetText = inputEvent.targetText;
+                delete (lastStep as InputStep).cssSelector; // Remove cssSelector when we have targetText
+              }
             } else {
               // Add a new input step
               const newStep: InputStep = {
@@ -279,11 +386,27 @@ export default defineBackground(() => {
                 url: inputEvent.url,
                 frameUrl: inputEvent.frameUrl,
                 xpath: inputEvent.xpath,
-                cssSelector: inputEvent.cssSelector,
                 elementTag: inputEvent.elementTag,
                 value: inputEvent.value,
                 screenshot: inputEvent.screenshot,
               };
+              
+              // Prioritize target_text for semantic workflows, but include cssSelector for complex elements
+              if (inputEvent.targetText && inputEvent.targetText.trim()) {
+                newStep.targetText = inputEvent.targetText;
+                
+                // For radio buttons, checkboxes, and complex input elements, also include cssSelector
+                if (inputEvent.cssSelector && 
+                    (inputEvent.cssSelector.includes('radio') || 
+                     inputEvent.cssSelector.includes('checkbox') ||
+                     inputEvent.cssSelector.includes('role="radio"') ||
+                     inputEvent.cssSelector.includes('role="checkbox"'))) {
+                  newStep.cssSelector = inputEvent.cssSelector;
+                }
+              } else if (inputEvent.cssSelector) {
+                newStep.cssSelector = inputEvent.cssSelector;
+              }
+              
               steps.push(newStep);
             }
           } else {
@@ -356,8 +479,8 @@ export default defineBackground(() => {
               };
               steps.push(newStep);
             }
-          } else if (rrEvent.type === EventType.Meta && rrEvent.data?.href) {
-            // Also handle rrweb meta events as navigation
+          } else if ((rrEvent.type === EventType.Meta || rrEvent.type === EventType.FullSnapshot) && rrEvent.data?.href) {
+            // Handle rrweb meta and fullsnapshot events as navigation (filtering now happens at storage level)
             const metaData = rrEvent.data as { href: string };
             const step: NavigationStep = {
               type: "navigation",
@@ -366,6 +489,24 @@ export default defineBackground(() => {
               url: metaData.href,
             };
             steps.push(step);
+          }
+          break;
+        }
+
+        case "EXTRACTION_STEP": {
+          const extractEvent = event as any; // Type assertion for extraction event
+          if (extractEvent.url && extractEvent.extractionGoal) {
+            const step: ExtractStep = {
+              type: "extract",
+              timestamp: extractEvent.timestamp,
+              tabId: extractEvent.tabId,
+              url: extractEvent.url,
+              extractionGoal: extractEvent.extractionGoal,
+              screenshot: extractEvent.screenshot,
+            };
+            steps.push(step);
+          } else {
+            console.warn("Skipping incomplete EXTRACTION_STEP:", extractEvent);
           }
           break;
         }
@@ -425,6 +566,37 @@ export default defineBackground(() => {
         }
         if (sender.tab?.title && !tabInfo[tabId].title) {
           tabInfo[tabId].title = sender.tab.title;
+        }
+
+        // Track user interactions for navigation filtering
+        if (customEventTypes.includes(message.type)) {
+          recentUserInteractions[tabId] = eventPayload.timestamp || Date.now();
+          console.log(`[NAV_FILTER] Tracked ${message.type} on tab ${tabId} at ${recentUserInteractions[tabId]}`);
+        }
+
+        // Log all rrweb events for debugging
+        if (message.type === "RRWEB_EVENT") {
+          console.log(`[NAV_FILTER] RRWEB event type ${eventPayload.type} (Meta=${EventType.Meta})`, eventPayload.data);
+        }
+
+        // Filter out side-effect navigation from rrweb meta and fullsnapshot events
+        if (message.type === "RRWEB_EVENT" && 
+            (eventPayload.type === EventType.Meta || eventPayload.type === EventType.FullSnapshot) && 
+            eventPayload.data?.href) {
+          const lastUserInteraction = recentUserInteractions[tabId] || 0;
+          const currentTime = eventPayload.timestamp || Date.now();
+          const timeSinceLastInteraction = currentTime - lastUserInteraction;
+          
+          // Check if this is the first event in the session (initial page load)
+          const isFirstEvent = !sessionLogs[tabId] || sessionLogs[tabId].length === 0;
+          
+          // Only store navigation if it's the first event (initial page load) or no user interaction has happened
+          if (lastUserInteraction === 0 || isFirstEvent) {
+            console.log(`[NAV_FILTER] STORING navigation: ${eventPayload.data.href} (lastInteraction: ${lastUserInteraction}, isFirst: ${isFirstEvent})`);
+          } else {
+            console.log(`[NAV_FILTER] FILTERED navigation: ${eventPayload.data.href} (${timeSinceLastInteraction}ms after interaction - always filter post-interaction navigation)`);
+            return; // Don't store this event
+          }
         }
 
         const eventWithMeta = {
@@ -491,6 +663,9 @@ export default defineBackground(() => {
         (key) => delete sessionLogs[parseInt(key)]
       );
       Object.keys(tabInfo).forEach((key) => delete tabInfo[parseInt(key)]);
+      Object.keys(recentUserInteractions).forEach(
+        (key) => delete recentUserInteractions[parseInt(key)]
+      );
       console.log("Cleared previous recording data.");
 
       // Start recording
@@ -524,6 +699,83 @@ export default defineBackground(() => {
         sendEventToServer(eventToSend);
       }
       sendResponse({ status: "stopped" }); // Send simple confirmation
+    }
+    // --- Add Extraction Step from Sidepanel ---
+    else if (message.type === "ADD_EXTRACTION_STEP") {
+      console.log("🤖 Received ADD_EXTRACTION_STEP request:", message.payload);
+      
+      if (!isRecordingEnabled) {
+        console.error("❌ Recording is not enabled");
+        sendResponse({ status: "error", message: "Recording is not active" });
+        return false;
+      }
+
+      try {
+        // For sidepanel messages, we need to get the active tab
+        // Since this is from sidepanel, sender.tab will be undefined
+        // Let's use a direct approach with chrome.tabs.query but handle it synchronously
+        
+        isAsync = true;
+        
+        chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+          try {
+            console.log("📋 Active tabs found:", tabs?.length || 0);
+            
+            if (chrome.runtime.lastError) {
+              console.error("❌ Chrome tabs query error:", chrome.runtime.lastError);
+              sendResponse({ status: "error", message: "Chrome tabs query failed" });
+              return;
+            }
+            
+            if (!tabs || tabs.length === 0 || !tabs[0]?.id) {
+              console.error("❌ No active tab found");
+              sendResponse({ status: "error", message: "No active tab found" });
+              return;
+            }
+
+            const tabId = tabs[0].id;
+            const tabUrl = tabs[0].url || "";
+            
+            console.log("✅ Using tab ID:", tabId, "URL:", tabUrl);
+            
+            const extractionStep: StoredExtractionEvent = {
+              timestamp: message.payload.timestamp,
+              tabId: tabId,
+              url: tabUrl,
+              extractionGoal: message.payload.extractionGoal,
+              messageType: "EXTRACTION_STEP",
+            };
+
+            console.log("📝 Creating extraction step:", extractionStep);
+
+            if (!sessionLogs[tabId]) {
+              console.log("🆕 Initializing sessionLogs for tab:", tabId);
+              sessionLogs[tabId] = [];
+            }
+            
+            sessionLogs[tabId].push(extractionStep);
+            console.log("✅ Added extraction step to sessionLogs. Total events for tab:", sessionLogs[tabId].length);
+            
+            // Broadcast update (don't await to avoid blocking)
+            broadcastWorkflowDataUpdate();
+            console.log("✅ Broadcasted workflow update");
+            
+            // Send success response
+            sendResponse({ status: "added" });
+            
+          } catch (error) {
+            console.error("❌ Error in tabs.query callback:", error);
+            sendResponse({ status: "error", message: `Callback error: ${error}` });
+          }
+        });
+        
+        return true; // Keep message channel open
+        
+      } catch (error) {
+        console.error("❌ Error setting up extraction step:", error);
+        sendResponse({ status: "error", message: `Setup error: ${error}` });
+        return false;
+      }
     }
     // --- Status Request from Content Script ---
     else if (message.type === "REQUEST_RECORDING_STATUS" && sender.tab?.id) {

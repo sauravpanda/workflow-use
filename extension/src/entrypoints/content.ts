@@ -234,6 +234,303 @@ function stopRecorder() {
   }
 }
 
+// --- Helper function to extract semantic information ---
+function extractSemanticInfo(element: HTMLElement) {
+  // Get associated label text using multiple strategies
+  let labelText = '';
+  const elementType = (element as any).type?.toLowerCase() || '';
+  const elementTag = element.tagName.toLowerCase();
+  
+  // Special handling for radio buttons and checkboxes
+  if ((elementTag === 'input' && (elementType === 'radio' || elementType === 'checkbox')) || 
+      (elementTag === 'button' && element.getAttribute('role') === 'radio')) {
+    
+    let fieldName = ''; // The group/field name (e.g., "Marital Status")
+    let optionValue = ''; // The specific option (e.g., "Married")
+    let allOptions: string[] = []; // All possible values in the group
+    
+    // First, get the individual option value/label
+    // Strategy 1: Direct label[for="id"] association (most reliable for radio buttons)
+    if ((element as any).id) {
+      const label = document.querySelector(`label[for="${(element as any).id}"]`);
+      if (label) {
+        optionValue = label.textContent?.trim() || '';
+      }
+    }
+    
+    // Strategy 2: Look for immediate parent label (common pattern)
+    if (!optionValue) {
+      const parent = element.parentElement;
+      if (parent && parent.tagName.toLowerCase() === 'label') {
+        optionValue = parent.textContent?.trim() || '';
+      }
+    }
+    
+    // Strategy 3: Look for adjacent text nodes or spans (common in custom radio buttons)
+    if (!optionValue) {
+      // Check next sibling for text
+      let sibling = element.nextElementSibling;
+      while (sibling && !optionValue) {
+        const siblingText = sibling.textContent?.trim() || '';
+        if (siblingText && siblingText.length < 50 && siblingText.length > 1) {
+          optionValue = siblingText;
+          break;
+        }
+        sibling = sibling.nextElementSibling;
+      }
+      
+      // If no next sibling, check previous sibling
+      if (!optionValue) {
+        sibling = element.previousElementSibling;
+        while (sibling && !optionValue) {
+          const siblingText = sibling.textContent?.trim() || '';
+          if (siblingText && siblingText.length < 50 && siblingText.length > 1) {
+            optionValue = siblingText;
+            break;
+          }
+          sibling = sibling.previousElementSibling;
+        }
+      }
+    }
+    
+    // Strategy 4: Use value attribute for radio buttons if no label found
+    if (!optionValue && elementType === 'radio') {
+      const value = (element as any).value || '';
+      if (value && value.length < 30) {
+        optionValue = value;
+      }
+    }
+    
+    // Now find the field name and all options for radio button groups
+    if (elementType === 'radio') {
+      const radioName = (element as any).name || '';
+      
+      // Find the field group name by looking for fieldset legend or group labels
+      let container = element.parentElement;
+      while (container && container !== document.body) {
+        // Check for fieldset with legend
+        if (container.tagName.toLowerCase() === 'fieldset') {
+          const legend = container.querySelector('legend');
+          if (legend) {
+            fieldName = legend.textContent?.trim() || '';
+            break;
+          }
+        }
+        
+        // Check for group labels (like div with a label or heading)
+        const possibleLabels = container.querySelectorAll('label, h1, h2, h3, h4, h5, h6, .label, .form-label, .field-label');
+        for (const possibleLabel of possibleLabels) {
+          const labelText = possibleLabel.textContent?.trim() || '';
+          // Check if this label doesn't belong to a specific input (not associated with any radio button value)
+          const isGeneralLabel = !Array.from(container.querySelectorAll('input[type="radio"]')).some(radio => {
+            const radioValue = (radio as any).value || '';
+            const radioLabel = radio.closest('label')?.textContent?.trim() || '';
+            return labelText.includes(radioValue) || labelText.includes(radioLabel);
+          });
+          
+          if (labelText && labelText.length > 2 && labelText.length < 100 && isGeneralLabel) {
+            fieldName = labelText;
+            break;
+          }
+        }
+        
+        if (fieldName) break;
+        container = container.parentElement;
+      }
+      
+      // Collect all options in the same radio group
+      if (radioName) {
+        const radioGroup = document.querySelectorAll(`input[type="radio"][name="${radioName}"]`);
+        radioGroup.forEach((radio) => {
+          // Get the label for each radio button
+          let radioOptionText = '';
+          const radioId = (radio as any).id;
+          if (radioId) {
+            const radioLabel = document.querySelector(`label[for="${radioId}"]`);
+            if (radioLabel) {
+              radioOptionText = radioLabel.textContent?.trim() || '';
+            }
+          }
+          
+          if (!radioOptionText) {
+            const radioParent = radio.parentElement;
+            if (radioParent && radioParent.tagName.toLowerCase() === 'label') {
+              radioOptionText = radioParent.textContent?.trim() || '';
+            }
+          }
+          
+          if (!radioOptionText) {
+            radioOptionText = (radio as any).value || '';
+          }
+          
+          if (radioOptionText && !allOptions.includes(radioOptionText)) {
+            allOptions.push(radioOptionText);
+          }
+        });
+      }
+    }
+    
+    // Create meaningful labelText combining field name and option
+    if (fieldName && optionValue) {
+      labelText = `${fieldName}: ${optionValue}`;
+    } else if (optionValue) {
+      labelText = optionValue;
+    } else if (fieldName) {
+      labelText = fieldName;
+    }
+    
+    // Store additional radio button info for later use
+    (element as any)._radioButtonInfo = {
+      fieldName,
+      optionValue,
+      allOptions
+    };
+    
+    // Fallback: Look in immediate parent container but filter out other radio button text
+    if (!labelText) {
+      const parent = element.parentElement;
+      if (parent) {
+        // Get all radio buttons in the same group
+        const radioButtons = parent.querySelectorAll('input[type="radio"], button[role="radio"]');
+        const parentText = parent.textContent?.trim() || '';
+        
+        if (parentText && parentText.length < 100) {
+          // Try to extract just this radio button's text by removing other radio button values
+          let cleanedText = parentText;
+          radioButtons.forEach((radio) => {
+            if (radio !== element) {
+              const radioValue = (radio as any).value || '';
+              const radioText = radio.textContent?.trim() || '';
+              if (radioValue) cleanedText = cleanedText.replace(radioValue, '').trim();
+              if (radioText) cleanedText = cleanedText.replace(radioText, '').trim();
+            }
+          });
+          
+          if (cleanedText && cleanedText.length > 1 && cleanedText.length < 50) {
+            labelText = cleanedText;
+          }
+        }
+      }
+    }
+  } else {
+    // Standard label extraction for non-radio elements
+    
+    // Special handling for buttons - use direct text content
+    if (elementTag === 'button' || 
+        (elementTag === 'input' && ['button', 'submit'].includes(elementType))) {
+      // For buttons, prioritize the element's own text content
+      labelText = element.textContent?.trim() || '';
+      
+      // If no direct text, try aria-label or value
+      if (!labelText) {
+        labelText = element.getAttribute('aria-label') || 
+                   (element as any).value || 
+                   element.title || '';
+      }
+    } else {
+      // Strategy 1: Direct label[for="id"] association
+      if ((element as any).id) {
+        const label = document.querySelector(`label[for="${(element as any).id}"]`);
+        if (label) {
+          labelText = label.textContent?.trim() || '';
+        }
+      }
+      
+      // Strategy 2: Find parent label element
+      if (!labelText) {
+        let parent = element.parentElement;
+        while (parent && parent !== document.body) {
+          if (parent.tagName.toLowerCase() === 'label') {
+            labelText = parent.textContent?.trim() || '';
+            break;
+          }
+          parent = parent.parentElement;
+        }
+      }
+    }
+    
+    // Strategy 3: Look for associated text in immediate siblings or parent containers
+    if (!labelText) {
+      const parent = element.parentElement;
+      if (parent) {
+        // Check for text in the same container
+        const parentText = parent.textContent?.trim() || '';
+        // Extract meaningful text that's not just the element's own value/placeholder
+        const elementOwnText = ((element as any).value || (element as any).placeholder || element.textContent || '').trim();
+        
+        if (parentText && parentText !== elementOwnText && parentText.length < 200) {
+          // Try to extract the label part by removing element's own text
+          let cleanedText = parentText;
+          if (elementOwnText) {
+            cleanedText = parentText.replace(elementOwnText, '').trim();
+          }
+          
+          // If we have meaningful text, use it
+          if (cleanedText && cleanedText.length > 2) {
+            labelText = cleanedText;
+          } else if (parentText.length < 100) {
+            // Use the full parent text if it's reasonable length
+            labelText = parentText;
+          }
+        }
+      }
+    }
+    
+    // Strategy 4: Look for preceding text nodes or elements
+    if (!labelText) {
+      let sibling = element.previousElementSibling;
+      while (sibling && !labelText) {
+        const siblingText = sibling.textContent?.trim() || '';
+        if (siblingText && siblingText.length < 100 && siblingText.length > 2) {
+          labelText = siblingText;
+          break;
+        }
+        sibling = sibling.previousElementSibling;
+      }
+    }
+    
+    // Strategy 5: Check aria-labelledby references
+    if (!labelText) {
+      const ariaLabelledBy = element.getAttribute('aria-labelledby');
+      if (ariaLabelledBy) {
+        const referencedElement = document.getElementById(ariaLabelledBy);
+        if (referencedElement) {
+          labelText = referencedElement.textContent?.trim() || '';
+        }
+      }
+    }
+  }
+  
+  // Get parent context for additional semantic information
+  let parentText = '';
+  let parent = element.parentElement;
+  while (parent && !parentText && parent !== document.body) {
+    const text = parent.textContent?.trim() || '';
+    if (text && text.length < 100) {
+      parentText = text;
+    }
+    parent = parent.parentElement;
+  }
+  
+  // Get radio button info if available
+  const radioButtonInfo = (element as any)._radioButtonInfo || null;
+  
+  return {
+    labelText,
+    textContent: element.textContent?.trim().slice(0, 200) || "",
+    placeholder: (element as any).placeholder || "",
+    title: element.title || "",
+    ariaLabel: element.getAttribute('aria-label') || "",
+    value: (element as any).value || "",
+    name: (element as any).name || "",
+    id: (element as any).id || "",
+    type: (element as any).type || "",
+    parentText,
+    // Radio button specific info
+    radioButtonInfo
+  };
+}
+
 // --- Custom Click Handler ---
 function handleCustomClick(event: MouseEvent) {
   if (!isRecordingActive) return;
@@ -242,6 +539,59 @@ function handleCustomClick(event: MouseEvent) {
 
   try {
     const xpath = getXPath(targetElement);
+    const semanticInfo = extractSemanticInfo(targetElement);
+    
+    // Determine the best target_text for semantic targeting
+    // For buttons, prioritize direct text content over label text to avoid confusion
+    let targetText = "";
+    if (targetElement.tagName.toLowerCase() === 'button' || 
+        (targetElement.tagName.toLowerCase() === 'input' && 
+         ['button', 'submit'].includes((targetElement as any).type?.toLowerCase()))) {
+      // For buttons, use the most specific text available
+      targetText = semanticInfo.textContent?.trim() || 
+                   semanticInfo.ariaLabel || 
+                   (targetElement as any).value || 
+                   semanticInfo.title || 
+                   "";
+    } else {
+      // For other elements, use the standard priority order
+      targetText = semanticInfo.labelText || 
+                   semanticInfo.textContent || 
+                   semanticInfo.placeholder || 
+                   semanticInfo.ariaLabel || 
+                   semanticInfo.name || 
+                   semanticInfo.id || 
+                   "";
+    }
+
+    // Smart filtering: Skip capturing clicks on elements that are likely redundant
+    if (shouldSkipClickEvent(targetElement, semanticInfo, targetText)) {
+      console.log("Skipping redundant click event on:", targetElement.tagName, targetText);
+      return;
+    }
+    
+    // Capture element state information for inputs
+    const elementType = (targetElement as any).type?.toLowerCase() || '';
+    let elementState = {};
+    
+    if (targetElement.tagName.toLowerCase() === 'input') {
+      if (elementType === 'checkbox') {
+        elementState = {
+          checked: (targetElement as HTMLInputElement).checked,
+          elementType: 'checkbox'
+        };
+      } else if (elementType === 'radio') {
+        elementState = {
+          checked: (targetElement as HTMLInputElement).checked,
+          elementType: 'radio'
+        };
+      } else {
+        elementState = {
+          elementType: elementType
+        };
+      }
+    }
+    
     const clickData = {
       timestamp: Date.now(),
       url: document.location.href, // Use document.location for main page URL
@@ -249,7 +599,14 @@ function handleCustomClick(event: MouseEvent) {
       xpath: xpath,
       cssSelector: getEnhancedCSSSelector(targetElement, xpath),
       elementTag: targetElement.tagName,
-      elementText: targetElement.textContent?.trim().slice(0, 200) || "",
+      elementText: semanticInfo.textContent,
+      elementType: elementType, // Add element type for processing
+      ...elementState, // Spread element state (checked status for checkboxes/radios)
+      // Semantic information for target_text based workflows
+      targetText: targetText,
+      semanticInfo: semanticInfo,
+      // Enhanced radio button information
+      radioButtonInfo: semanticInfo.radioButtonInfo,
     };
     console.log("Sending CUSTOM_CLICK_EVENT:", clickData);
     chrome.runtime.sendMessage({
@@ -259,6 +616,44 @@ function handleCustomClick(event: MouseEvent) {
   } catch (error) {
     console.error("Error capturing click data:", error);
   }
+}
+
+// Helper function to determine if we should skip capturing this click event
+function shouldSkipClickEvent(element: HTMLElement, semanticInfo: any, targetText: string): boolean {
+  const tagName = element.tagName.toLowerCase();
+  const elementType = (element as any).type?.toLowerCase() || '';
+  
+  // Skip hidden input elements (they often fire alongside visible elements)
+  if (tagName === 'input' && elementType === 'radio' && !isElementVisible(element)) {
+    return true;
+  }
+  
+  // Skip button elements that have no meaningful text and are likely part of a composite component
+  if (tagName === 'button' && 
+      element.getAttribute('role') === 'radio' && 
+      !targetText.trim()) {
+    return true;
+  }
+  
+  // Skip clicks on elements that have no semantic value and are very generic
+  if (!targetText.trim() && 
+      tagName === 'input' && 
+      elementType === 'radio' &&
+      element.style.display === 'none') {
+    return true;
+  }
+  
+  return false;
+}
+
+// Helper function to check if an element is visible
+function isElementVisible(element: HTMLElement): boolean {
+  const style = window.getComputedStyle(element);
+  return style.display !== 'none' && 
+         style.visibility !== 'hidden' && 
+         style.opacity !== '0' &&
+         element.offsetWidth > 0 && 
+         element.offsetHeight > 0;
 }
 // --- End Custom Click Handler ---
 
@@ -271,6 +666,17 @@ function handleInput(event: Event) {
 
   try {
     const xpath = getXPath(targetElement);
+    const semanticInfo = extractSemanticInfo(targetElement as HTMLElement);
+    
+    // Determine the best target_text for semantic targeting
+    // For inputs, prioritize labelText and placeholder over textContent
+    const targetText = semanticInfo.labelText || 
+                      semanticInfo.placeholder || 
+                      semanticInfo.ariaLabel || 
+                      semanticInfo.name || 
+                      semanticInfo.id || 
+                      "";
+    
     const inputData = {
       timestamp: Date.now(),
       url: document.location.href,
@@ -279,6 +685,10 @@ function handleInput(event: Event) {
       cssSelector: getEnhancedCSSSelector(targetElement, xpath),
       elementTag: targetElement.tagName,
       value: isPassword ? "********" : targetElement.value,
+      inputType: (targetElement as any).type?.toLowerCase() || 'text', // Input type (text, password, email, etc.)
+      // Semantic information for target_text based workflows
+      targetText: targetText,
+      semanticInfo: semanticInfo,
     };
     console.log("Sending CUSTOM_INPUT_EVENT:", inputData);
     chrome.runtime.sendMessage({
@@ -301,6 +711,22 @@ function handleSelectChange(event: Event) {
   try {
     const xpath = getXPath(targetElement);
     const selectedOption = targetElement.options[targetElement.selectedIndex];
+    
+    // Extract all available options
+    const allOptions: Array<{text: string, value: string}> = [];
+    for (let i = 0; i < targetElement.options.length; i++) {
+      const option = targetElement.options[i];
+      allOptions.push({
+        text: option.text.trim(),
+        value: option.value
+      });
+    }
+    
+    // Get semantic info for the select element
+    const semanticInfo = extractSemanticInfo(targetElement);
+    const fieldName = semanticInfo.labelText || semanticInfo.name || 
+                     semanticInfo.ariaLabel || targetElement.name || '';
+    
     const selectData = {
       timestamp: Date.now(),
       url: document.location.href,
@@ -310,6 +736,10 @@ function handleSelectChange(event: Event) {
       elementTag: targetElement.tagName,
       selectedValue: targetElement.value,
       selectedText: selectedOption ? selectedOption.text : "", // Get selected option text
+      allOptions: allOptions, // Include all available options
+      fieldName: fieldName, // Field name/label
+      targetText: semanticInfo.labelText || fieldName,
+      semanticInfo: semanticInfo
     };
     console.log("Sending CUSTOM_SELECT_EVENT:", selectData);
     chrome.runtime.sendMessage({

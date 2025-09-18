@@ -1,0 +1,326 @@
+{
+  "workflow_analysis": "Semantic version of recorded workflow. Uses visible text to identify elements instead of CSS selectors for improved reliability.",
+  "name": "Recorded Workflow (Semantic)",
+  "description": "form-filling",
+  "version": "1.0",
+  "steps": [
+    {
+      "description": "Navigate to https://v0-complex-form-example.vercel.app/",
+      "type": "navigation",
+      "url": "https://v0-complex-form-example.vercel.app/"
+    },
+    {
+      "description": "Click element",
+      "type": "click",
+      "target_text": "Start Application"
+    },
+    {
+      "description": "Click element",
+      "type": "click",
+      "target_text": "firstName"
+    },
+    {
+      "description": "Click element",
+      "type": "click",
+      "target_text": "lastName"
+    },
+    {
+      "description": "Input element",
+      "type": "input",
+      "target_text": "lastName",
+      "value": "Panda"
+    },
+    {
+      "description": "Click element",
+      "type": "click",
+      "target_text": "firstName"
+    },
+    {
+      "description": "Input element",
+      "type": "input",
+      "target_text": "firstName",
+      "value": "Saurav"
+    },
+    {
+      "description": "Click element",
+      "type": "click",
+      "target_text": "socialSecurityLast4"
+    },
+    {
+      "description": "Input element",
+      "type": "input",
+      "target_text": "socialSecurityLast4",
+      "value": "1234"
+    },
+    {
+      "description": "Click element",
+      "type": "click",
+      "cssSelector": "button.aspect-square.h-4.w-4.rounded-full.border.border-primary.text-primary.ring-offset-background[type=\"button\"][role=\"radio\"][id=\"male\"]"
+    },
+    {
+      "description": "Click element",
+      "type": "click",
+      "cssSelector": "input[type=\"radio\"]"
+    },
+    {
+      "description": "Click element",
+      "type": "click",
+      "target_text": "single"
+    },
+    {
+      "description": "Click element",
+      "type": "click",
+      "cssSelector": "button.aspect-square.h-4.w-4.rounded-full.border.border-primary.text-primary.ring-offset-background[type=\"button\"][role=\"radio\"][id=\"single\"]"
+    },
+    {
+      "description": "Click element",
+      "type": "click",
+      "cssSelector": "input[type=\"radio\"]"
+    },
+    {
+      "description": null,
+      "type": "scroll",
+      "scrollX": 0,
+      "scrollY": 119
+    },
+    {
+      "description": "Click element",
+      "type": "click",
+      "target_text": "Next: Contact Information"
+    },
+    {
+      "description": null,
+      "type": "scroll",
+      "scrollX": 0,
+      "scrollY": 116
+    },
+    {
+      "description": "Click element",
+      "type": "click",
+      "target_text": "primaryPhone"
+    },
+    {
+      "description": "Input element",
+      "type": "input",
+      "target_text": "primaryPhone",
+      "value": "9177046644"
+    },
+    {
+      "description": "Click element",
+      "type": "click",
+      "cssSelector": "button.aspect-square.h-4.w-4.rounded-full.border.border-primary.text-primary.ring-offset-background[type=\"button\"][role=\"radio\"][id=\"phone-mobile\"]"
+    },
+    {
+      "description": "Click element",
+      "type": "click",
+      "cssSelector": "input[type=\"radio\"]"
+    },
+    {
+      "description": "Click element",
+      "type": "click",
+      "target_text": "email"
+    },
+    {
+      "description": "Input element",
+      "type": "input",
+      "target_text": "email",
+      "value": "sgp65@cornell.edu"
+    },
+    {
+      "description": "Click element",
+      "type": "click",
+      "target_text": "confirmEmail"
+    },
+    {
+      "description": "Input element",
+      "type": "input",
+      "target_text": "confirmEmail",
+      "value": "sgp65@cornell.edu"
+    },
+    {
+      "description": "Click element",
+      "type": "click",
+      "target_text": "Primary Phone Number *"
+    },
+    {
+      "description": "Click element",
+      "type": "click",
+      "target_text": "streetAddress1"
+    },
+    {
+      "description": "Input element",
+      "type": "input",
+      "target_text": "streetAddress1",
+      "value": "123 main st"
+    },
+    {
+      "description": null,
+      "type": "scroll",
+      "scrollX": 0,
+      "scrollY": 278
+    },
+    {
+      "description": "Click element",
+      "type": "click",
+      "target_text": "city"
+    },
+    {
+      "description": "Input element",
+      "type": "input",
+      "target_text": "city",
+      "value": "SF"
+    },
+    {
+      "description": "Click element",
+      "type": "click",
+      "target_text": "state"
+    },
+    {
+      "description": "Input element",
+      "type": "input",
+      "target_text": "state",
+      "value": "CA"
+    },
+    {
+      "description": null,
+      "type": "scroll",
+      "scrollX": 0,
+      "scrollY": 716
+    },
+    {
+      "description": "Click element",
+      "type": "click",
+      "target_text": "zipCode"
+    },
+    {
+      "description": "Input element",
+      "type": "input",
+      "target_text": "zipCode",
+      "value": "12345"
+    },
+    {
+      "description": "Click element",
+      "type": "click",
+      "target_text": "county"
+    },
+    {
+      "description": "Input element",
+      "type": "input",
+      "target_text": "county",
+      "value": "CA"
+    },
+    {
+      "description": "Click element",
+      "type": "click",
+      "cssSelector": "button.aspect-square.h-4.w-4.rounded-full.border.border-primary.text-primary.ring-offset-background[type=\"button\"][role=\"radio\"][id=\"residence-own\"]"
+    },
+    {
+      "description": "Click element",
+      "type": "click",
+      "cssSelector": "input[type=\"radio\"]"
+    },
+    {
+      "description": null,
+      "type": "scroll",
+      "scrollX": 0,
+      "scrollY": 747
+    },
+    {
+      "description": "Click element",
+      "type": "click",
+      "target_text": "Next: Employment Information"
+    },
+    {
+      "description": null,
+      "type": "scroll",
+      "scrollX": 0,
+      "scrollY": 0
+    },
+    {
+      "description": "Click element",
+      "type": "click",
+      "cssSelector": "button.aspect-square.h-4.w-4.rounded-full.border.border-primary.text-primary.ring-offset-background[type=\"button\"][role=\"radio\"][id=\"student\"]"
+    },
+    {
+      "description": "Click element",
+      "type": "click",
+      "cssSelector": "input[type=\"radio\"]"
+    },
+    {
+      "description": null,
+      "type": "scroll",
+      "scrollX": 0,
+      "scrollY": 346
+    },
+    {
+      "description": "Click element",
+      "type": "click",
+      "cssSelector": "button.aspect-square.h-4.w-4.rounded-full.border.border-primary.text-primary.ring-offset-background[type=\"button\"][role=\"radio\"][id=\"contact-email\"]"
+    },
+    {
+      "description": "Click element",
+      "type": "click",
+      "cssSelector": "input[type=\"radio\"]"
+    },
+    {
+      "description": "Click element",
+      "type": "click",
+      "target_text": "Next: Review Application"
+    },
+    {
+      "description": null,
+      "type": "scroll",
+      "scrollX": 0,
+      "scrollY": 0
+    },
+    {
+      "description": null,
+      "type": "scroll",
+      "scrollX": 0,
+      "scrollY": 408
+    },
+    {
+      "description": null,
+      "type": "scroll",
+      "scrollX": 0,
+      "scrollY": 268
+    },
+    {
+      "description": "Click element",
+      "type": "click",
+      "cssSelector": "button.peer.h-4.w-4.shrink-0.rounded-sm.border.border-primary.ring-offset-background[type=\"button\"][role=\"checkbox\"][id=\"terms\"]"
+    },
+    {
+      "description": "Click element",
+      "type": "click",
+      "cssSelector": "input[type=\"checkbox\"]"
+    },
+    {
+      "description": "Click element",
+      "type": "click",
+      "cssSelector": "button.peer.h-4.w-4.shrink-0.rounded-sm.border.border-primary.ring-offset-background[type=\"button\"][role=\"checkbox\"][id=\"privacy\"]"
+    },
+    {
+      "description": "Click element",
+      "type": "click",
+      "cssSelector": "input[type=\"checkbox\"]"
+    },
+    {
+      "description": "Click element",
+      "type": "click",
+      "cssSelector": "button.inline-flex.items-center.justify-center.gap-2.whitespace-nowrap.rounded-md.text-sm.font-medium.ring-offset-background.transition-colors.bg-primary.text-primary-foreground.h-10.px-4.py-2[type=\"submit\"]"
+    },
+    {
+      "description": null,
+      "type": "scroll",
+      "scrollX": 0,
+      "scrollY": 0
+    },
+    {
+      "description": "Click element",
+      "type": "click",
+      "cssSelector": "button.inline-flex.items-center.justify-center.gap-2.whitespace-nowrap.rounded-md.text-sm.font-medium.ring-offset-background.transition-colors.bg-primary.text-primary-foreground.h-10.px-4.py-2.w-full.max-w-xs"
+    }
+  ],
+  "input_schema": []
+}
