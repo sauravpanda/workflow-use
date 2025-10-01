@@ -9,11 +9,8 @@ from typing import Any, Dict, List, TypeVar
 
 from browser_use import Agent, Browser
 from browser_use.agent.views import ActionResult, AgentHistoryList
-from langchain.agents import AgentExecutor, create_tool_calling_agent
-from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.tools import StructuredTool
+from browser_use.llm.base import BaseChatModel
+from browser_use.llm import SystemMessage, UserMessage
 from pydantic import BaseModel, create_model
 
 from workflow_use.controller.service import WorkflowController
@@ -141,7 +138,6 @@ class Workflow:
 			css_selector = getattr(next_step_resolved, 'cssSelector', None)
 			if css_selector:
 				try:
-					await self.browser._wait_for_stable_network()
 					page = await self.browser.get_current_page()
 
 					logger.info(f'Waiting for element with selector: {truncate_selector(css_selector)}')
@@ -452,15 +448,13 @@ class Workflow:
 		# Combine all extracted contents
 		combined_text = '\n\n'.join(extracted_contents)
 
-		messages: list[BaseMessage] = [
-			AIMessage(content=STRUCTURED_OUTPUT_PROMPT),
-			HumanMessage(content=combined_text),
+		messages = [
+			SystemMessage(content=STRUCTURED_OUTPUT_PROMPT),
+			UserMessage(content=combined_text),
 		]
 
-		chain = self.llm.with_structured_output(output_model)
-		chain_result: T = await chain.ainvoke(messages)  # type: ignore
-
-		return chain_result
+		response = await self.llm.ainvoke(messages, output_format=output_model)
+		return response.completion
 
 	async def run_step(self, step_index: int, inputs: dict[str, Any] | None = None):
 		"""Run a *single* workflow step asynchronously and return its result.
@@ -533,7 +527,6 @@ class Workflow:
 		try:
 			for step_index, step_dict in enumerate(self.steps):  # self.steps now holds dictionaries
 				await asyncio.sleep(0.1)
-				await self.browser._wait_for_stable_network()
 
 				# Check if cancellation was requested
 				if cancel_event and cancel_event.is_set():
@@ -563,7 +556,7 @@ class Workflow:
 			# Clean-up browser after finishing workflow
 			if close_browser_at_end:
 				self.browser.browser_profile.keep_alive = False
-				await self.browser.close()
+				await self.browser.stop()
 
 		return WorkflowRunOutput(step_results=results, output_model=output_model_result)
 
@@ -605,65 +598,100 @@ class Workflow:
 			**_cast(Dict[str, Any], fields),
 		)
 
-	def as_tool(self, *, name: str | None = None, description: str | None = None):  # noqa: D401
-		"""Expose the entire workflow as a LangChain *StructuredTool* instance.
-
-		The generated tool validates its arguments against the workflow's input
-		schema (if present) and then returns the JSON-serialised output of
-		:py:meth:`run`.
-		"""
-
-		InputModel = self._build_input_model()
-		# Use schema name as default, sanitize for tool name requirements
-		default_name = ''.join(c if c.isalnum() else '_' for c in self.name)
-		tool_name = name or default_name[:50]
-		doc = description or self.description  # Use schema description
-
-		# `self` is closed over via the inner function so we can keep state.
-		async def _invoke(**kwargs):  # type: ignore[override]
-			logger.info(f'Running workflow as tool with inputs: {kwargs}')
-			augmented_inputs = kwargs.copy() if kwargs else {}
-			for input_def in self.inputs_def:
-				if not input_def.required and input_def.name not in augmented_inputs:
-					augmented_inputs[input_def.name] = ''
-			result = await self.run(inputs=augmented_inputs)
-			# Serialise non-string output so models that expect a string tool
-			# response still work.
-			try:
-				return _json.dumps(result, default=str)
-			except Exception:
-				return str(result)
-
-		return StructuredTool.from_function(
-			coroutine=_invoke,
-			name=tool_name,
-			description=doc,
-			args_schema=InputModel,
-		)
-
 	async def run_as_tool(self, prompt: str) -> str:
-		"""
-		Run the workflow with a prompt and automatically parse the required variables.
+		"""Run the workflow with inputs parsed from a natural language prompt.
 
-		@dev Uses AgentExecutor to properly handle the tool invocation loop.
-		"""
+		Args:
+			prompt: Natural language description of the task and inputs
 
-		# For now I kept it simple but one could think of using a react agent here.
+		Returns:
+			JSON string with workflow results
+		"""
 		if self.llm is None:
-			raise ValueError("Cannot run as tool: An 'llm' instance must be supplied for tool-based steps")
+			raise ValueError("LLM is required for run_as_tool to parse inputs from prompt")
 
-		prompt_template = ChatPromptTemplate.from_messages(
-			[
-				('system', 'You are a helpful assistant'),
-				('human', '{input}'),
-				# Placeholders fill up a **list** of messages
-				('placeholder', '{agent_scratchpad}'),
-			]
+		# Parse inputs from prompt using LLM
+		input_model = self._build_input_model()
+
+		system_prompt = f"""You are a helpful assistant that extracts workflow input parameters from user prompts.
+The workflow requires the following inputs:
+{json.dumps(input_model.model_json_schema(), indent=2)}
+
+Extract the values from the user's prompt and return them in the required format."""
+
+		messages = [
+			SystemMessage(content=system_prompt),
+			UserMessage(content=prompt)
+		]
+
+		response = await self.llm.ainvoke(messages, output_format=input_model)
+		inputs = response.completion.model_dump()
+
+		# Run the workflow with parsed inputs
+		result = await self.run(inputs=inputs, close_browser_at_end=True)
+
+		# Return results as JSON
+		output = {
+			"success": True,
+			"steps_executed": len(result.step_results),
+			"inputs_used": inputs,
+			"context": self.context
+		}
+
+		return json.dumps(output, indent=2)
+
+	async def run_with_no_ai(
+		self,
+		inputs: dict[str, Any] | None = None,
+		close_browser_at_end: bool = True,
+	) -> WorkflowRunOutput:
+		"""Execute the workflow using semantic abstraction without AI/LLM.
+
+		Args:
+			inputs: Optional dictionary of workflow inputs
+			close_browser_at_end: Whether to close the browser when done
+
+		Returns:
+			WorkflowRunOutput containing all step results
+		"""
+		from workflow_use.workflow.semantic_executor import SemanticWorkflowExecutor
+
+		runtime_inputs = inputs or {}
+		# 1. Validate inputs against definition
+		self._validate_inputs(runtime_inputs)
+		# 2. Initialize context with validated inputs
+		self.context = runtime_inputs.copy()
+
+		results: List[ActionResult] = []
+
+		# Initialize semantic executor
+		executor = SemanticWorkflowExecutor(
+			browser=self.browser,
+			page_extraction_llm=self.page_extraction_llm
 		)
 
-		# Create the workflow tool
-		workflow_tool = self.as_tool()
-		agent = create_tool_calling_agent(self.llm, [workflow_tool], prompt_template)
-		agent_executor = AgentExecutor(agent=agent, tools=[workflow_tool])
-		result = await agent_executor.ainvoke({'input': prompt})
-		return result['output']
+		await self.browser.start()
+		try:
+			for step_index, step_dict in enumerate(self.steps):
+				await asyncio.sleep(0.1)
+
+				step_description = step_dict.description or 'No description provided'
+				logger.info(f'--- Running Step {step_index + 1}/{len(self.steps)} -- {step_description} ---')
+
+				# Resolve placeholders
+				step_resolved = self._resolve_placeholders(step_dict)
+
+				# Execute using semantic executor
+				result = await executor.execute_step(step_resolved)
+				results.append(result)
+
+				# Store outputs
+				self._store_output(step_resolved, result)
+				logger.info(f'--- Finished Step {step_index + 1} ---\n')
+
+		finally:
+			if close_browser_at_end:
+				self.browser.browser_profile.keep_alive = False
+				await self.browser.stop()
+
+		return WorkflowRunOutput(step_results=results, output_model=None)

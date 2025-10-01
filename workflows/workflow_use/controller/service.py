@@ -3,9 +3,8 @@ import logging
 
 from browser_use import Browser
 from browser_use.agent.views import ActionResult
-from browser_use.controller.service import Controller
-from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.prompts import PromptTemplate
+from browser_use.controller import Controller
+from browser_use.llm.base import BaseChatModel
 
 from workflow_use.controller.utils import get_best_element_handle, truncate_selector
 from workflow_use.controller.views import (
@@ -227,11 +226,14 @@ class WorkflowController(Controller):
 					content += f'\n\nIFRAME {iframe.url}:\n'
 					content += markdownify.markdownify(await iframe.content())
 
-			prompt = 'Your task is to extract the content of the page. You will be given a page and a goal and you should extract all relevant information around this goal from the page. If the goal is vague, summarize the page. Respond in json format. Extraction goal: {goal}, Page: {page}'
-			template = PromptTemplate(input_variables=['goal', 'page'], template=prompt)
 			try:
-				output = await page_extraction_llm.ainvoke(template.format(goal=params.goal, page=content))
-				msg = f'📄  Extracted from page\n: {output.content}\n'
+				from browser_use.llm import SystemMessage, UserMessage
+				messages = [
+					SystemMessage(content='Your task is to extract the content of the page. You will be given a page and a goal and you should extract all relevant information around this goal from the page. If the goal is vague, summarize the page. Respond in json format.'),
+					UserMessage(content=f'Extraction goal: {params.goal}\n\nPage: {content}')
+				]
+				output = await page_extraction_llm.ainvoke(messages)
+				msg = f'📄  Extracted from page\n: {output.completion}\n'
 				logger.info(msg)
 				return ActionResult(extracted_content=msg, include_in_memory=True)
 			except Exception as e:
